@@ -338,11 +338,20 @@ class OptionsRiskManager:
 
     def __init__(self, capital: float):
         self.capital = capital
+        self.initial_capital = capital
         self.daily_pnl = 0.0
         self.open_count = 0
         self.trade_log: list = []
 
+    def update_capital(self, new_capital: float):
+        """Update capital from live wallet balance."""
+        if new_capital > 0:
+            self.capital = new_capital
+            log.info(f"💰 Capital updated: ${new_capital:,.4f}")
+
     def can_trade(self):
+        if self.capital <= 0:
+            return False, "🔴 Zero balance — cannot trade"
         if self.daily_pnl <= -(self.capital * DAILY_LOSS_LIMIT):
             return False, f"🔴 Daily loss limit hit: ${abs(self.daily_pnl):.2f}"
         if self.open_count >= 2:
@@ -504,6 +513,34 @@ class DeltaOptionsAPI:
         except Exception as e:
             log.error(f"Spot price error: {e}")
         return 0.0
+
+    # ── Authenticated: fetch wallet balance
+    def get_wallet_balance(self) -> dict:
+        """Returns {total_balance, available_balance, asset_symbol} for the primary trading asset."""
+        if not API_KEY or not API_SECRET:
+            return {"total": 0, "available": 0, "asset": "USDT"}
+        try:
+            path = "/v2/wallet/balances"
+            headers = self._sign("GET", path)
+            resp = self.session.get(f"{BASE_URL}{path}", headers=headers, timeout=10)
+            data = resp.json()
+            if not data.get("success"):
+                log.warning(f"Wallet API: {data.get('error', 'unknown')}")
+                return {"total": 0, "available": 0, "asset": "USDT"}
+            best = {"total": 0, "available": 0, "asset": "USDT"}
+            for b in data.get("result", []):
+                bal = float(b.get("balance", 0) or 0)
+                avail = float(b.get("available_balance", 0) or 0)
+                sym = b.get("asset_symbol", "")
+                if bal > best["total"]:
+                    best = {"total": bal, "available": avail, "asset": sym}
+                # Log all non-zero balances
+                if bal > 0:
+                    log.info(f"   💰 {sym}: {bal:.4f} (avail: {avail:.4f})")
+            return best
+        except Exception as e:
+            log.error(f"Wallet balance error: {e}")
+            return {"total": 0, "available": 0, "asset": "USDT"}
 
     # ── Public: option chain via tickers endpoint
     def get_options_chain(self, underlying: str = "BTC") -> list:
@@ -787,21 +824,38 @@ class OptionsTradingBot:
     def __init__(self, capital: float = 15000.0):
         self.options_api = DeltaOptionsAPI()
         self.striker = StrikePriceSelector()
-        self.risk = OptionsRiskManager(capital)
         self.perf = PerformanceTracker()
         self.telegram = SimpleTelegramNotifier()
         self.signal_engine = StandaloneSignalEngine(self.options_api) if not MAIN_BOT_AVAILABLE else None
         self.positions: List[OptionsPosition] = []
         self.last_reset = datetime.now().date()
+
+        # ── Fetch live wallet balance for capital ──
+        log.info("📡 Fetching wallet balance...")
+        wallet = self.options_api.get_wallet_balance()
+        live_balance = wallet["available"]
+        if live_balance > 0:
+            capital = live_balance
+            log.info(f"💰 Using LIVE balance: ${capital:,.4f} {wallet['asset']}")
+        else:
+            log.info(f"💰 Using configured capital: ${capital:,.2f} (wallet returned 0)")
+
+        self.risk = OptionsRiskManager(capital)
         self._load_positions()
 
         log.info("═" * 65)
         log.info("🎯 OPTIONS BOT v2.0 STARTED")
-        log.info(f"   Mode: {'PAPER' if PAPER_TRADE else '🔴 LIVE'} | API: {BASE_URL}")
-        log.info(f"   Capital: ${capital:,.2f} | Leverage: {LEVERAGE}x")
+        log.info(f"   Mode: {'PAPER' if PAPER_TRADE else '🔴 LIVE TRADING'} | API: {BASE_URL}")
+        log.info(f"   Balance: ${capital:,.4f} {wallet['asset']} | Leverage: {LEVERAGE}x")
+        log.info(f"   Max risk/trade: ${capital * OPTIONS_RISK_PCT:,.4f}")
         log.info(f"   Open positions: {len([p for p in self.positions if p.status=='open'])}")
         log.info("═" * 65)
-        self.telegram.send(f"🎯 <b>Options Bot v2.0</b>\nMode: {'Paper' if PAPER_TRADE else 'LIVE'}")
+        self.telegram.send(
+            f"🎯 <b>Options Bot v2.0</b>\n"
+            f"Mode: {'Paper' if PAPER_TRADE else '🔴 LIVE'}\n"
+            f"Balance: ${capital:,.4f} {wallet['asset']}\n"
+            f"Max risk: ${capital * OPTIONS_RISK_PCT:,.4f}"
+        )
 
     def _save_positions(self):
         data = []
@@ -879,6 +933,11 @@ class OptionsTradingBot:
     def _cycle(self):
         ts = datetime.now(pytz.UTC)
         log.info(f"── Cycle {ts.strftime('%H:%M:%S UTC')} ──────────────")
+
+        # Refresh balance from wallet every cycle
+        wallet = self.options_api.get_wallet_balance()
+        if wallet["available"] > 0:
+            self.risk.update_capital(wallet["available"])
 
         for pos in [p for p in self.positions if p.status == "open"]:
             self._check_auto_close(pos)
@@ -1060,12 +1119,18 @@ class OptionsTradingBot:
 # ENTRY POINT
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
+    mode = "PAPER TRADE" if PAPER_TRADE else "🔴 LIVE TRADING"
     print("\n" + "█" * 60)
-    print("  CRYPTO OPTIONS BOT v2.0 — ALL BUGS FIXED")
-    print(f"  Mode: {'PAPER TRADE' if PAPER_TRADE else '🔴 LIVE'}")
+    print(f"  CRYPTO OPTIONS BOT v2.0 — {mode}")
     print(f"  API:  {BASE_URL}")
     print("█" * 60)
-    print("\nStarting in 5 seconds... Ctrl+C to cancel.")
-    time.sleep(5)
+    if not PAPER_TRADE:
+        print("\n  ⚠️  LIVE MODE — Real orders will be placed!")
+        print("  Starting in 5 seconds... Ctrl+C to cancel.")
+        time.sleep(5)
+    else:
+        print("\n  Starting in 3 seconds...")
+        time.sleep(3)
+    # Capital is fetched from live wallet; fallback to env var
     bot = OptionsTradingBot(capital=float(os.getenv("CAPITAL", "15000")))
     bot.run()
