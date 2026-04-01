@@ -17,9 +17,12 @@ def run_manual_test():
 
     # 1. Get Spot Price
     try:
-        tickers = api._get("/v2/tickers/BTCUSD")
-        spot = float(tickers["result"]["mark_price"])
-        print(f"✅ Connection OK. BTC Spot: ${spot:,.2f}")
+        spot = api.get_spot_price("BTCUSD")
+        if spot > 0:
+            print(f"✅ Connection OK. BTC Spot: ${spot:,.2f}")
+        else:
+            print("❌ Connection OK but Spot Price is 0. Check API connectivity.")
+            return
     except Exception as e:
         print(f"❌ Connection Failed: {e}")
         return
