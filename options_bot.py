@@ -556,7 +556,7 @@ class DeltaOptionsAPI:
                     "bid": bid,
                     "ask": ask,
                     "spread_pct": spread,
-                    "oi": int(t.get("oi", 0) or 0),
+                    "oi": int(float(t.get("oi", 0) or 0)),
                     "tradeable": spread < 0.05 and bid > 0,
                 })
             log.info(f"Options chain: {len(options)} contracts for {underlying}")
@@ -631,7 +631,7 @@ class DeltaOptionsAPI:
                 "mark_price": mark, "bid": bid, "ask": ask,
                 "spread_pct": spread_pct, "iv": iv,
                 "delta": float(greeks.get("delta", 0) or 0),
-                "oi": int(r.get("oi", 0) or 0),
+                "oi": int(float(r.get("oi", 0) or 0)),
                 "tradeable": spread_pct < 0.05 and bid > 0,
             }
         except Exception as e:
