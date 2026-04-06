@@ -371,26 +371,50 @@ class OptionsTradingBot:
             return
 
         # 4. Fetch the available options
+        log.info(f"🔍 Fetching options chain for {BASE_UNDERLYING}...")
         chain = self.api.get_options_chain(BASE_UNDERLYING)
         if not chain: 
-            return # Quit early if no options found
+            log.warning("❌ Options chain returned EMPTY — no contracts available on exchange")
+            return
+
+        # Count how many options we got and how many are tradeable
+        option_type_needed = "call" if sig == "BUY" else "put"
+        matching = [c for c in chain if c["type"] == option_type_needed]
+        tradeable_matching = [c for c in matching if c["tradeable"]]
+        log.info(f"📋 Chain: {len(chain)} total | {len(matching)} {option_type_needed}s | {len(tradeable_matching)} tradeable")
 
         # 5. Strike Selection Logic
         # We target a strike price 1% out of the money
         target = spot * 1.01 if sig == "BUY" else spot * 0.99
+        log.info(f"🎯 Looking for {option_type_needed} near strike ${target:,.0f}")
         
         # Search the chain for the option closest to our target
+        # First try tradeable options, if none found, try ANY option with a mark_price
         best = None; min_diff = 999999
-        for c in chain:
-            if c["type"] == ("call" if sig == "BUY" else "put") and c["tradeable"]:
+        for c in matching:
+            if c["tradeable"]:
                 diff = abs(c["strike"] - target)
                 if diff < min_diff: 
                     min_diff = diff
                     best = c
         
+        # Fallback: if no "tradeable" option, pick the closest one that has ANY price
+        if not best:
+            log.warning("⚠️ No tradeable options found — trying ANY option with a mark price...")
+            for c in matching:
+                if c["mark_price"] > 0:
+                    diff = abs(c["strike"] - target)
+                    if diff < min_diff:
+                        min_diff = diff
+                        best = c
+
         # 6. Execute the trade if we found a good contract
         if best: 
+            log.info(f"✅ Best contract: {best['symbol']} | Strike: ${best['strike']:,.0f} | Bid: {best['bid']} | Ask: {best['ask']} | Mark: {best['mark_price']}")
             self._open(best, sig)
+        else:
+            log.warning(f"❌ Could not find any {option_type_needed} option to trade!")
+
 
     # Logic for opening a new position
     def _open(self, bc, sig):
