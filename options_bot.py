@@ -184,19 +184,27 @@ class DeltaAPI:
             if r.get("success") and r.get("result"):
                 options = []
                 for t in r.get("result", []):
-                    q = t.get("quotes") or {}
-                    bid, ask = float(q.get("best_bid", 0)), float(q.get("best_ask", 0))
-                    spread_pct = (ask-bid)/ask if ask > 0 else 1.0
-                    tradeable = bid > 0 and spread_pct < 0.20
-                    options.append({
-                        "symbol": t.get("symbol"), "product_id": t.get("product_id"),
-                        "strike": float(t.get("strike_price", 0)),
-                        "type": "call" if "call" in t.get("contract_type", "") else "put",
-                        "mark_price": float(t.get("mark_price", 0)),
-                        "bid": bid, "ask": ask, "spread_pct": spread_pct,
-                        "tradeable": tradeable
-                    })
+                    try:
+                        q = t.get("quotes") or {}
+                        bid = float(q.get("best_bid") or 0)
+                        ask = float(q.get("best_ask") or 0)
+                        strike = float(t.get("strike_price") or 0)
+                        mark = float(t.get("mark_price") or 0)
+                        spread_pct = (ask-bid)/ask if ask > 0 else 1.0
+                        tradeable = bid > 0 and spread_pct < 0.20
+                        options.append({
+                            "symbol": t.get("symbol"), "product_id": t.get("product_id"),
+                            "strike": strike,
+                            "type": "call" if "call" in t.get("contract_type", "") else "put",
+                            "mark_price": mark,
+                            "bid": bid, "ask": ask, "spread_pct": spread_pct,
+                            "tradeable": tradeable
+                        })
+                    except Exception as parse_err:
+                        continue  # Skip broken contracts silently
+                log.info(f"    ✅ Parsed {len(options)} options from {len(r.get('result',[]))} raw contracts")
                 return options
+
             
             # Step 2: If no options found, diagnose what IS available on this exchange
             log.warning("    🔬 No options found! Diagnosing what contracts exist on this exchange...")
