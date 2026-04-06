@@ -57,7 +57,7 @@ CLOSE_BEFORE_EXPIRY_MINS = 30
 # The maximum number of hours to hold a position.
 MAX_HOLD_HOURS    = 4
 # How often the bot runs a cycle (in seconds). 300 = 5 minutes.
-CYCLE_INTERVAL    = 300
+CYCLE_INTERVAL    = 10
 # The underlying asset we are trading options on.
 BASE_UNDERLYING   = os.getenv("BASE_UNDERLYING", "BTC")
 
