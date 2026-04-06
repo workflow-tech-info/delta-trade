@@ -44,7 +44,7 @@ PAPER_TRADE       = True if FORCE_PAPER_TRADE else os.getenv("PAPER_TRADE", "tru
 
 # The minimum score (out of 100) needed to trigger a trade.
 # Lower means more trades (but more risky). Higher means fewer, safer trades.
-OPTIONS_MIN_SCORE = 10      
+OPTIONS_MIN_SCORE = 0      # Set to 0 to force a trade immediately for testing
 
 # Leverage used for positions. Example: 100x leverage.
 LEVERAGE          = int(os.getenv("LEVERAGE", "100"))
