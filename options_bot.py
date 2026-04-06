@@ -253,7 +253,7 @@ class SignalEngine:
             score = 50 + (change * 1000) 
             score = max(0, min(100, score)) # Ensure score is between 0 and 100
             
-            sig = "BUY" if score > 55 else "SELL" if score < 45 else "NEUTRAL"
+            sig = "BUY" if score >= 50 else "SELL"  # No NEUTRAL zone — always trade
             return sig, score, "spot_momentum", False, spot
 
         # Extract closing prices from the candle data
@@ -286,7 +286,7 @@ class SignalEngine:
         score = max(0, min(100, score))
         
         # Determine the final Signal text based on score
-        sig = "BUY" if score >= 60 else "SELL" if score <= 40 else "NEUTRAL"
+        sig = "BUY" if score >= 50 else "SELL"  # No NEUTRAL zone — always trade
         return sig, score, "candle_mixed", False, spot
 
     # Support function: Calculates Exponential Moving Average
