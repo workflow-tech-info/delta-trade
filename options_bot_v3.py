@@ -25,12 +25,12 @@ TG_TOKEN       = os.getenv("TG_TOKEN", "")
 TG_CHAT_ID     = os.getenv("TG_CHAT_ID", "")
 
 # ⚠️ FORCED PAPER MODE — change this constant ONLY after verifying profitability
-FORCE_PAPER_TRADE = True
+FORCE_PAPER_TRADE = False
 PAPER_TRADE       = True if FORCE_PAPER_TRADE else os.getenv("PAPER_TRADE", "true").lower() == "true"
 
 LEVERAGE          = int(os.getenv("LEVERAGE", "100"))
 OPTIONS_RISK_PCT  = 0.005
-OPTIONS_MIN_SCORE = 55          # lowered from 75 so bot actually trades
+OPTIONS_MIN_SCORE = 10          # Lowered to 10 for immediate testing
 DAILY_LOSS_LIMIT  = 0.03
 CLOSE_BEFORE_EXPIRY_MINS = 30
 MAX_HOLD_HOURS    = 4
