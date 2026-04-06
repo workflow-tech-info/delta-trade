@@ -339,57 +339,73 @@ class OptionsTradingBot:
 
     # The infinite loop that keeps the bot alive
     def run(self):
+        log.info("═══════════════════════════════════════════════════")
+        log.info("🐺  THE HUNT BEGINS — Entering the market jungle...")
+        log.info("═══════════════════════════════════════════════════")
         while True:
             try:
                 self._cycle()
-                log.info(f"⏳ Sleeping {CYCLE_INTERVAL//60}m...\n")
-                time.sleep(CYCLE_INTERVAL) # Waits for 5 minutes before checking again
+                log.info(f"💤 Resting {CYCLE_INTERVAL}s before next hunt...\n")
+                time.sleep(CYCLE_INTERVAL)
             except KeyboardInterrupt: 
-                break # Stops if you hit Ctrl+C
+                log.info("🛑 Hunter called off — shutting down gracefully.")
+                break
             except Exception as e: 
-                log.error(f"Error in main loop: {e}"); time.sleep(60)
+                log.error(f"🩸 Wounded! Error: {e} — recovering in 60s..."); time.sleep(60)
 
     # One single "round" or "tick" of trading logic
     def _cycle(self):
         ts = datetime.now(pytz.UTC).strftime('%H:%M:%S UTC')
-        log.info(f"── Cycle {ts} ──────────────")
+        log.info(f"══════════ 🔄 NEW HUNT CYCLE — {ts} ══════════")
         
-        # 1. Monitor currently open trades to see if we should close them
-        for pos in [p for p in self.positions if p.status == "open"]:
-            self._monitor(pos)
+        # 1. Check on existing prey we've caught
+        open_positions = [p for p in self.positions if p.status == "open"]
+        if open_positions:
+            log.info(f"👁️  Watching {len(open_positions)} captured prey...")
+            for pos in open_positions:
+                self._monitor(pos)
 
         # 2. Limit how many active trades we can have at once
         if len([p for p in self.positions if p.status == "open"]) >= 2: 
-            return # Skip finding new trades if we already hold 2 positions
+            log.info("🎒 Hands full — already holding 2 positions. Waiting...")
+            return
         
-        # 3. Ask the brain (Signal Engine) what to do
+        # 3. Sniff the air — read the market
+        log.info("👃 Sniffing the market for a signal...")
         sig, score, cond, near_fib, spot = self.signals.evaluate()
-        log.info(f"📊 Signal: {sig} | Score: {score} | Spot: ${spot:,.0f}")
+        
+        score_bar = "█" * int(score / 5) + "░" * (20 - int(score / 5))
+        direction = "🟢 BULLISH" if sig == "BUY" else "🔴 BEARISH" if sig == "SELL" else "⚪ FLAT"
+        log.info(f"📡 Market Read: {direction} | Score: [{score_bar}] {score:.1f}/100 | BTC: ${spot:,.2f}")
+        log.info(f"📐 Method: {cond} | Min needed: {OPTIONS_MIN_SCORE}")
 
         # If the score is too weak, skip.
         if score < OPTIONS_MIN_SCORE or sig == "NEUTRAL": 
+            log.info("😴 Signal too weak or neutral — no prey in sight. Standing down.")
             return
 
-        # 4. Fetch the available options
-        log.info(f"🔍 Fetching options chain for {BASE_UNDERLYING}...")
+        log.info(f"🔥 SIGNAL LOCKED: {sig} — Score {score:.1f} passes threshold {OPTIONS_MIN_SCORE}. Moving in...")
+
+        # 4. Scan the territory — fetch available options
+        log.info(f"🔭 Scanning the options jungle for {BASE_UNDERLYING} contracts...")
         chain = self.api.get_options_chain(BASE_UNDERLYING)
         if not chain: 
-            log.warning("❌ Options chain returned EMPTY — no contracts available on exchange")
+            log.warning("🏜️  The jungle is EMPTY — no options contracts found on the exchange!")
             return
 
-        # Count how many options we got and how many are tradeable
+        # Count what we found
         option_type_needed = "call" if sig == "BUY" else "put"
         matching = [c for c in chain if c["type"] == option_type_needed]
         tradeable_matching = [c for c in matching if c["tradeable"]]
-        log.info(f"📋 Chain: {len(chain)} total | {len(matching)} {option_type_needed}s | {len(tradeable_matching)} tradeable")
+        log.info(f"🗺️  Terrain mapped: {len(chain)} total contracts spotted")
+        log.info(f"    └─ {len(matching)} are {option_type_needed.upper()}s")
+        log.info(f"    └─ {len(tradeable_matching)} are tradeable (have bid + tight spread)")
 
-        # 5. Strike Selection Logic
-        # We target a strike price 1% out of the money
+        # 5. Pick the target strike
         target = spot * 1.01 if sig == "BUY" else spot * 0.99
-        log.info(f"🎯 Looking for {option_type_needed} near strike ${target:,.0f}")
+        log.info(f"🎯 Locking crosshairs on {option_type_needed.upper()} near strike ${target:,.0f}...")
         
-        # Search the chain for the option closest to our target
-        # First try tradeable options, if none found, try ANY option with a mark_price
+        # Search for the best match
         best = None; min_diff = 999999
         for c in matching:
             if c["tradeable"]:
@@ -398,9 +414,9 @@ class OptionsTradingBot:
                     min_diff = diff
                     best = c
         
-        # Fallback: if no "tradeable" option, pick the closest one that has ANY price
+        # Fallback: if no "tradeable" option, pick the closest one with any mark price
         if not best:
-            log.warning("⚠️ No tradeable options found — trying ANY option with a mark price...")
+            log.warning("⚠️  No clean shots available — widening search to ANY priced contract...")
             for c in matching:
                 if c["mark_price"] > 0:
                     diff = abs(c["strike"] - target)
@@ -408,69 +424,102 @@ class OptionsTradingBot:
                         min_diff = diff
                         best = c
 
-        # 6. Execute the trade if we found a good contract
+        # 6. Execute!
         if best: 
-            log.info(f"✅ Best contract: {best['symbol']} | Strike: ${best['strike']:,.0f} | Bid: {best['bid']} | Ask: {best['ask']} | Mark: {best['mark_price']}")
+            log.info(f"🎯 PREY SPOTTED!")
+            log.info(f"    └─ Contract:  {best['symbol']}")
+            log.info(f"    └─ Strike:    ${best['strike']:,.0f}")
+            log.info(f"    └─ Bid/Ask:   ${best['bid']:.4f} / ${best['ask']:.4f}")
+            log.info(f"    └─ Mark:      ${best['mark_price']:.4f}")
+            log.info(f"    └─ Spread:    {best['spread_pct']*100:.1f}%")
+            log.info(f"🏹 ATTACKING — Placing order...")
             self._open(best, sig)
         else:
-            log.warning(f"❌ Could not find any {option_type_needed} option to trade!")
+            log.warning(f"💀 HUNT FAILED — No {option_type_needed.upper()} options available to attack!")
+            if matching:
+                log.info(f"    └─ Found {len(matching)} {option_type_needed}s but none had valid pricing")
+                for c in matching[:3]:
+                    log.info(f"       • {c['symbol']} Strike=${c['strike']:,.0f} Bid={c['bid']} Ask={c['ask']} Mark={c['mark_price']}")
 
 
     # Logic for opening a new position
     def _open(self, bc, sig):
-        # We start by paying the "Ask" price (the seller's price). If unavailable, use mark_price.
         ep = bc["ask"] if bc["ask"] > 0 else bc["mark_price"]
         
-        # Figure out how many to buy based on risk limits
         budget = self.capital * OPTIONS_RISK_PCT
         qty = max(1, int(budget / max(ep, 0.01)))
         
-        # Send API request
+        log.info(f"💰 Budget: ${budget:.2f} | Price: ${ep:.4f} | Quantity: {qty}")
+        log.info(f"📤 Sending {'PAPER' if PAPER_TRADE else 'LIVE'} order to Delta Exchange...")
+        
         order = self.api.place_order(bc["product_id"], "buy", qty, bc["symbol"])
         
         if order.get("success"):
-            # If successful, create a record of it
             pos = OptionsPosition(
                 contract=OptionContract(symbol=bc["symbol"], underlying=BASE_UNDERLYING, expiry="", strike=bc["strike"], 
                                         option_type=bc["type"], premium=ep, delta=0, implied_vol=0.5, open_interest=0, 
                                         bid=bc["bid"], ask=bc["ask"], spread_pct=bc["spread_pct"], product_id=bc["product_id"]),
                 side="buy", quantity=qty, entry_premium=ep, entry_time=datetime.now(pytz.UTC).isoformat(),
-                stop_premium=ep*0.5,       # Stop loss at 50% loss
-                target_premium=ep*2.0,     # Take profit at 100% gain
+                stop_premium=ep*0.5,
+                target_premium=ep*2.0,
                 order_id=str(order["result"]["id"]), peak_premium=ep)
             
-            # Save it so we don't forget it, and print log
             self.positions.append(pos)
-            log.info(f"🎯 OPENED: {qty}x {bc['symbol']} @ ${ep:.4f}")
+            log.info(f"══════════════════════════════════════════════")
+            log.info(f"🏆 PREY CAPTURED!")
+            log.info(f"    └─ {qty}x {bc['symbol']}")
+            log.info(f"    └─ Entry Price: ${ep:.4f}")
+            log.info(f"    └─ Stop Loss:   ${ep*0.5:.4f} (-50%)")
+            log.info(f"    └─ Take Profit: ${ep*2.0:.4f} (+100%)")
+            log.info(f"    └─ Order ID:    {order['result']['id']}")
+            log.info(f"══════════════════════════════════════════════")
             _save_json(POSITIONS_FILE, [asdict(p) for p in self.positions])
+        else:
+            log.error(f"💥 ORDER REJECTED by exchange! Response: {order}")
 
     # Monitors an existing open trade for stop-loss or take-profit
     def _monitor(self, pos):
         curr = self.api.get_option_premium(pos.contract.symbol)
-        if not curr: return
+        if not curr: 
+            log.warning(f"🔇 Can't get price for {pos.contract.symbol} — prey went dark")
+            return
         
         p = curr.get("mark_price", pos.entry_premium)
+        pnl_pct = ((p - pos.entry_premium) / pos.entry_premium) * 100
         
-        # Should we exit? Checks if it cross stop loss line or target line.
-        if p <= pos.stop_premium or p >= pos.target_premium:
-            self._close(pos, p, "AUTO_EXIT")
+        emoji = "📈" if pnl_pct > 0 else "📉"
+        log.info(f"    {emoji} {pos.contract.symbol}: ${p:.4f} ({pnl_pct:+.1f}%) | Stop: ${pos.stop_premium:.4f} | Target: ${pos.target_premium:.4f}")
+        
+        if p <= pos.stop_premium:
+            log.warning(f"🩸 STOP LOSS HIT — Prey bit back! Closing at ${p:.4f}")
+            self._close(pos, p, "STOP_LOSS")
+        elif p >= pos.target_premium:
+            log.info(f"🎉 TARGET HIT — Perfect kill! Taking profits at ${p:.4f}")
+            self._close(pos, p, "TAKE_PROFIT")
 
     # Closes out an existing trade
     def _close(self, pos, p, reason):
-        # Place sell order to close
         self.api.place_order(pos.contract.product_id, "sell", pos.quantity, pos.contract.symbol)
         
-        # Mark as closed, record reason and exit price
+        pnl = (p - pos.entry_premium) * pos.quantity
         pos.status = "closed"
         pos.exit_premium = p
         pos.exit_reason = reason
+        pos.pnl = pnl
         
-        log.info(f"✅ CLOSED: {pos.contract.symbol} @ ${p:.4f} ({reason})")
+        emoji = "💰" if pnl > 0 else "💸"
+        log.info(f"══════════════════════════════════════════════")
+        log.info(f"{emoji} PREY RELEASED — {reason}")
+        log.info(f"    └─ Contract:  {pos.contract.symbol}")
+        log.info(f"    └─ Entry:     ${pos.entry_premium:.4f}")
+        log.info(f"    └─ Exit:      ${p:.4f}")
+        log.info(f"    └─ P&L:       ${pnl:.4f}")
+        log.info(f"══════════════════════════════════════════════")
         
-        # Save exact state to disk
         _save_json(POSITIONS_FILE, [asdict(p) for p in self.positions])
 
 # Standard Python run command. Boots the bot up if this file is run directly.
 if __name__ == "__main__":
     bot = OptionsTradingBot()
     bot.run()
+
