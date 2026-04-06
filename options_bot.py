@@ -173,29 +173,73 @@ class DeltaAPI:
     # Fetch the list of all available options on Delta right now
     def get_options_chain(self, underlying="BTC") -> list:
         try:
+            # Step 1: Try to fetch options specifically
+            log.info(f"    📡 API call: GET /v2/tickers?contract_types=call_options,put_options&underlying_asset_symbols={underlying}")
             r = self.session.get(f"{BASE_URL}/v2/tickers", 
                                  params={"contract_types": "call_options,put_options", "underlying_asset_symbols": underlying},
                                  timeout=10).json()
-            if not r.get("success"): return []
-            options = []
-            for t in r.get("result", []):
-                q = t.get("quotes") or {}
-                bid, ask = float(q.get("best_bid", 0)), float(q.get("best_ask", 0))
+            
+            log.info(f"    📡 API response: success={r.get('success')} | result count={len(r.get('result', []))}")
+            
+            if r.get("success") and r.get("result"):
+                options = []
+                for t in r.get("result", []):
+                    q = t.get("quotes") or {}
+                    bid, ask = float(q.get("best_bid", 0)), float(q.get("best_ask", 0))
+                    spread_pct = (ask-bid)/ask if ask > 0 else 1.0
+                    tradeable = bid > 0 and spread_pct < 0.20
+                    options.append({
+                        "symbol": t.get("symbol"), "product_id": t.get("product_id"),
+                        "strike": float(t.get("strike_price", 0)),
+                        "type": "call" if "call" in t.get("contract_type", "") else "put",
+                        "mark_price": float(t.get("mark_price", 0)),
+                        "bid": bid, "ask": ask, "spread_pct": spread_pct,
+                        "tradeable": tradeable
+                    })
+                return options
+            
+            # Step 2: If no options found, diagnose what IS available on this exchange
+            log.warning("    🔬 No options found! Diagnosing what contracts exist on this exchange...")
+            diag = self.session.get(f"{BASE_URL}/v2/tickers", timeout=10).json()
+            if diag.get("success"):
+                results = diag.get("result", [])
+                # Group by contract type
+                types = {}
+                for t in results:
+                    ct = t.get("contract_type", "unknown")
+                    if ct not in types: types[ct] = []
+                    types[ct].append(t.get("symbol"))
+                log.info(f"    🔬 Exchange has {len(results)} total contracts:")
+                for ct, symbols in types.items():
+                    log.info(f"        └─ {ct}: {len(symbols)} contracts (e.g. {symbols[:3]})")
                 
-                # Check if it's tradeable (must have a bid price, and the spread shouldn't be too huge)
-                spread_pct = (ask-bid)/ask if ask > 0 else 1.0
-                tradeable = bid > 0 and spread_pct < 0.20
-                
-                options.append({
-                    "symbol": t.get("symbol"), "product_id": t.get("product_id"),
-                    "strike": float(t.get("strike_price", 0)),
-                    "type": "call" if "call" in t.get("contract_type", "") else "put",
-                    "mark_price": float(t.get("mark_price", 0)),
-                    "bid": bid, "ask": ask, "spread_pct": spread_pct,
-                    "tradeable": tradeable
-                })
-            return options
-        except: return []
+                # If there are futures/perpetuals, we can trade those instead!
+                if "perpetual_futures" in types or "futures" in types:
+                    log.info("    💡 This exchange has FUTURES! Switching to futures trading...")
+                    futures = []
+                    for t in results:
+                        if t.get("contract_type") in ["perpetual_futures", "futures"] and underlying in t.get("symbol", ""):
+                            q = t.get("quotes") or {}
+                            bid, ask = float(q.get("best_bid", 0)), float(q.get("best_ask", 0))
+                            futures.append({
+                                "symbol": t.get("symbol"), "product_id": t.get("product_id"),
+                                "strike": float(t.get("mark_price", 0)),  # Use mark price as "strike" for futures
+                                "type": "call",  # Futures don't have call/put, treat as call for BUY
+                                "mark_price": float(t.get("mark_price", 0)),
+                                "bid": bid, "ask": ask, 
+                                "spread_pct": (ask-bid)/ask if ask > 0 else 1.0,
+                                "tradeable": bid > 0,
+                                "is_futures": True
+                            })
+                    if futures:
+                        log.info(f"    🎯 Found {len(futures)} {underlying} futures to trade!")
+                        return futures
+            
+            return []
+        except Exception as e:
+            log.error(f"    💥 API error in get_options_chain: {e}")
+            return []
+
 
     # Sends an order (buy or sell) to the exchange
     def place_order(self, product_id, side, size, symbol=""):
