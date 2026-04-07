@@ -1014,12 +1014,18 @@ class OptionsTradingBot:
 
         self.api.set_leverage(bc["product_id"], LEVERAGE)
 
+        # Delta Exchange: each option lot = 0.001 BTC
+        # Premium is quoted per 1 BTC, so cost_per_lot = premium × 0.001
+        LOT_SIZE = 0.001  # 0.001 BTC per contract on Delta Exchange
         notional = available * wallet_fraction * LEVERAGE
         ep = bc["ask"] if bc["ask"] > 0 else bc["mark_price"]
-        qty = max(1, int(notional / max(ep, 0.01)))
+        cost_per_lot = ep * LOT_SIZE  # Actual USD cost per lot
+        qty = max(1, int(notional / max(cost_per_lot, 0.01)))
 
         frac_label = f" ({wallet_fraction*100:.0f}% of wallet)" if wallet_fraction < 1.0 else ""
-        log.info(f"    💰 Wallet: ${available:,.2f} | Allocation: ${available*wallet_fraction:,.2f}{frac_label} | Notional ({LEVERAGE}x): ${notional:,.2f}")
+        log.info(f"    💰 Wallet: ${available:,.2f} | Allocation: ${available*wallet_fraction:,.2f}{frac_label}")
+        log.info(f"    💰 Notional ({LEVERAGE}x): ${notional:,.2f}")
+        log.info(f"    💰 Premium: ${ep:.2f}/BTC | Cost/lot: ${cost_per_lot:.4f} | Qty: {qty} lots")
         log.info(f"    💰 Buying {qty}x @ ${ep:.4f}")
         log.info(f"    📤 {'PAPER' if PAPER_TRADE else 'LIVE'} order...")
 
