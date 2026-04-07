@@ -345,6 +345,259 @@ When the bot starts, you'll see something like this:
 
 ---
 
+## 🎬 REAL EXAMPLES — Watch the Wolf Hunt
+
+### Example 1: 🟢 The Perfect Bullish Kill
+
+> *April 7, 2026. BTC is at $83,500. The wolf wakes up.*
+
+**LAYER 1 — Macro Survey (runs at midnight UTC):**
+
+```
+📅 WEEKLY (20 candles):
+   RSI: 42 — "Prey weakened after a sell-off, buyers gathering" (+10)
+   EMA9 > EMA21 — "Short-term bulls LEADING" (+12)
+   EMA20 > EMA50 — "Herd migrating UPHILL for weeks" (+8)
+   MACD: Bullish — "Momentum favors the hunter" (+5)
+   Momentum: 5-bar ↑+3.2% — Uphill (+3)
+   🕯️ Bullish Engulfing found (+10)
+   📐 Ascending Triangle found (+8)
+   Weekly Score: 50 + 10 + 12 + 8 + 5 + 3 + 10 + 8 = 106 → capped at 100
+   ✅ WEEKLY = BULLISH
+
+📅 DAILY (120 candles):
+   RSI: 38 — "Prey exhausted from yesterday's dip" (+10)
+   EMA9 > EMA21 — "Still bullish short-term" (+12)
+   MACD: Bullish (+5)
+   Momentum: 5-bar ↑+1.1% (+3)
+   🕯️ Hammer found (+8), Morning Star found (+12)
+   📏 Fib 0.618 = $82,900 — PRICE IS RIGHT THERE! 🏆
+   Daily Score: 50 + 10 + 12 + 5 + 3 + 8 + 12 = 100
+   ✅ DAILY = BULLISH
+
+🏷️ VERDICT: Both WEEKLY and DAILY are BULLISH → TODAY'S BIAS = 🟢 BULLISH
+📋 Rule: Only CALL options today. The prey runs uphill.
+```
+
+**LAYER 2 — Higher TF Confirmation (runs every cycle):**
+
+```
+4h:  RSI 45, EMA9 > EMA21 → BULLISH ✅
+1h:  RSI 51, EMA9 > EMA21 → BULLISH ✅
+15m: RSI 55, EMA9 < EMA21 → NEUTRAL ❌
+
+Result: 2/3 confirm BULLISH → ✅ PASSED (need 2)
+```
+
+**LAYER 3 — 5-Minute Entry (the moment of truth):**
+
+```
+5m Chart Analysis:
+   RSI: 35 → "Prey momentarily oversold" (+12)
+   EMA9 just crossed above EMA21 → "Bullish crossover!" (+10)
+   MACD: Bullish cross happening! (+8)
+   Momentum: 5-bar ↑+0.3% (+5)
+   🕯️ Bullish Engulfing on 5m (+10)
+   🕯️ Three Inside Up on 5m (+10)
+
+TOTAL: 50 + 12 + 10 + 8 + 5 + 10 + 10 = 105 → capped at 100
+Score: 100 ≥ 70 threshold → ✅ SIGNAL: BUY!
+```
+
+**LAYER 4 — The Strike:**
+
+```
+💰 Wallet: $200.00
+⚙️ Leverage: 50x confirmed
+💰 Notional: $200 × 50 = $10,000
+
+Top option found: C-BTC-84000-100426  (Call, strike $84,000, expires Apr 10)
+   Greeks: Δ=+0.42 (⚡ good speed) | Θ=-28 (🟢 low bleed) | IV=38% (cheap!)
+   Ask price: $3.50 per contract
+
+Qty: $10,000 / $3.50 = 2,857 contracts
+Order placed: BUY 2,857x C-BTC-84000-100426 @ $3.50
+
+Trailing Stop: $3.50 × 0.50 = $1.75
+
+🏆 PREY CAPTURED. Now monitoring...
+```
+
+**What happens next:**
+
+```
+14:30 — BTC rises to $84,200 → Option now $5.20 → Peak! Stop → $2.60
+14:45 — BTC rises to $85,000 → Option now $8.10 → New peak! Stop → $4.05
+15:00 — BTC dips to $84,500 → Option at $6.50 → Still above $4.05 stop ✅
+15:15 — BTC rises to $85,800 → Option now $11.40 → New peak! Stop → $5.70
+15:30 — BTC dips to $84,800 → Option drops to $5.50 → HIT STOP at $5.70!
+
+EXIT: Sold 2,857 contracts at $5.70
+P&L: ($5.70 - $3.50) × 2,857 = $6,285.40 profit! 🎉
+Return: +62.9% on premium, +3,142% on $200 wallet (leveraged)
+```
+
+> **The wolf turned $200 into $6,285 in 1 hour.** That's the "one kill a day" philosophy.
+
+---
+
+### Example 2: 🔴 The Bearish Hunt
+
+> *BTC is at $90,000 after a massive rally. Weekly RSI is 75 (OVERHEATED).*
+
+```
+📅 WEEKLY: RSI 75 (overbought -18), EMA9 still > EMA21 (+12), MACD bearish cross (-5)
+   🕯️ Evening Star detected (-12), 🔴 Shooting Star (-8)
+   Score: 50 - 18 + 12 - 5 - 12 - 8 = 19 → BEARISH
+
+📅 DAILY: RSI 68 (-10), EMA9 just crossed BELOW EMA21 (-12)
+   🕯️ Bearish Engulfing (-10), 🔴 Dark Cloud Cover (-10)
+   📐 Double Top at $91,200 detected (-10)
+   Score: 50 - 10 - 12 - 10 - 10 - 10 = -2 → capped at 0 → BEARISH
+
+🏷️ VERDICT: 🔴 BEARISH — Hunt PUT options only.
+💥 MACRO SIGNAL: 🔴 Double Top on DAILY — the ceiling is confirmed!
+
+Higher TFs confirm (4h bearish, 1h bearish) → ✅
+5m chart: Bearish Marubozu + Three Black Crows → Score 85 → ✅
+
+Execution:
+   PUT option: P-BTC-89000-100426, Δ=-0.38, Ask=$4.20
+   Qty: $10,000 / $4.20 = 2,380 contracts
+   Stop: $2.10 (50% from entry)
+
+BTC crashes from $90,000 → $86,500 in 3 hours
+PUT option: $4.20 → $14.80 (peak)
+Stop trails up: $7.40
+
+Exit at $8.60 when price bounces
+P&L: ($8.60 - $4.20) × 2,380 = $10,472 profit! 🎉
+```
+
+> **BTC dropped and the wolf profited from the fall.** PUT options gain value when BTC goes down.
+
+---
+
+### Example 3: 🟡 The Choppy Hedge
+
+> *Weekly says BULLISH (score 62), but Daily says BEARISH (score 38). They disagree!*
+
+```
+🏷️ VERDICT: 🟡 CHOPPY — Weekly and Daily fight each other.
+📋 Strategy: HEDGE MODE — buying BOTH a call and a put.
+
+The wolf splits its wallet in half:
+
+LEG 1: CALL option (50% wallet = $100 × 50x = $5,000)
+   C-BTC-84000-100426 @ $3.00 → 1,666 contracts
+
+LEG 2: PUT option (50% wallet = $100 × 50x = $5,000)
+   P-BTC-83000-100426 @ $2.80 → 1,785 contracts
+```
+
+**Scenario A: BTC drops $2,000**
+```
+CALL: $3.00 → $0.80 (loses $3,663)
+PUT:  $2.80 → $9.50 (gains $11,959)
+NET:  +$8,296 profit! The PUT more than covers the CALL loss.
+```
+
+**Scenario B: BTC rises $2,000**
+```
+CALL: $3.00 → $8.20 (gains $8,663)
+PUT:  $2.80 → $0.60 (loses $3,927)
+NET:  +$4,736 profit! The CALL explosion covers the PUT loss.
+```
+
+**Scenario C: BTC goes sideways (worst case)**
+```
+CALL: $3.00 → $2.50 (loses $832)
+PUT:  $2.80 → $2.30 (loses $892)
+NET:  -$1,724 loss. Both legs bleed from theta decay.
+```
+
+> **The hedge wins when BTC makes a BIG move in either direction.** It only loses when nothing happens (sideways). Since crypto rarely sits still, hedges work well on choppy days.
+
+---
+
+### Example 4: 🚫 The Wolf Waits (No Trade)
+
+> *Not every day is a hunting day. Here's what "standing down" looks like.*
+
+```
+═══════════ 🔄 HUNT CYCLE — 14:32:00 UTC ══════════
+👃 Running 4-layer analysis...
+
+📊 HIGHER TF CONFIRMATION:
+    4h: 🟢 BULLISH | RSI: 55 | Score: 67
+   1h: ⚪ NEUTRAL | RSI: 50 | Score: 52
+   15m: 🔴 BEARISH | RSI: 62 | Score: 38
+📐 Confirmation: 1/3 align with BULLISH bias
+
+⚠️ Higher TFs don't confirm daily bias — standing down.
+😴 Criteria not met — standing down.
+💤 Resting 120s before next scan...
+```
+
+**Why no trade?** Layer 2 failed. Only 1 of 3 higher TFs agreed with the bullish bias. The wolf needs at least 2. So it waits.
+
+**Another "no trade" example — weak score:**
+
+```
+📊 HIGHER TF CONFIRMATION:
+    4h: 🟢 BULLISH ✅
+    1h: 🟢 BULLISH ✅
+   15m: 🟢 BULLISH ✅
+📐 Confirmation: 3/3 ✅
+
+📊 ENTRY ANALYSIS (5m base):
+   RSI: 52 (+0)
+   EMA9 > EMA21 (+10)
+   MACD: no cross (+0)
+   Momentum: barely up (+5)
+   No patterns found (+0)
+
+TOTAL: 50 + 0 + 10 + 0 + 5 + 0 = 65
+Score: 65 < 70 threshold → ❌ NOT ENOUGH
+
+😴 Criteria not met — standing down.
+```
+
+**Why no trade?** Layer 3 scored only 65. We need 70. The signal exists but it's not strong enough. The wolf doesn't eat scraps — it waits for a feast.
+
+> **The wolf passes on 80% of opportunities.** That's what makes the 20% it takes so powerful. Patience is the predator's greatest weapon.
+
+---
+
+### Example 5: 📏 Fibonacci in Action
+
+> *How the wolf uses Fibonacci to time entries perfectly.*
+
+```
+BTC rallied from $78,000 (swing low) to $86,000 (swing high)
+Now BTC is pulling back. WHERE will it bounce?
+
+Fibonacci Map:
+   Fib 0.236: $84,112  ← "Just a scratch — too shallow"
+   Fib 0.382: $82,944  ← "Healthy pullback zone"
+   Fib 0.500: $82,000  ← "Half-way — decisive moment"
+   Fib 0.618: $81,056  ← 🏆 "GOLDEN RATIO — strongest bounce!"
+   Fib 0.786: $79,712  ← "Deep pullback — last stand before reversal"
+
+BTC drops to $81,100... right at the 0.618 Golden Ratio!
+The bot logs: "⚡ PRICE AT FIB 0.618 — Critical decision zone!"
+
+At this moment, if the 5m chart shows a Hammer or Bullish Engulfing
+→ Score jumps to 78 → ATTACK! Buy a CALL right at the golden bounce.
+
+Result: BTC bounces from $81,056 back to $84,500 → +4.2% move
+The CALL option explodes: $2.50 → $9.80 → +292% gain! 🎉
+```
+
+> **Fibonacci works because millions of traders are watching the same levels.** When BTC hits 0.618, everyone expects a bounce — and the collective action MAKES it bounce. The wolf knows where the herd gathers.
+
+---
+
 ## ⚠️ RISKS — The Wolf Can Still Bleed
 
 | Risk | What It Means | Mitigation |
