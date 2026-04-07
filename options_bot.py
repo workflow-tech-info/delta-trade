@@ -448,6 +448,21 @@ class SignalEngine:
         self.key_levels = {}   # Support & resistance levels
         self.daily_report = [] # Full analysis report
 
+    def _calc_fibonacci(self, candles):
+        """Calculate Fibonacci retracement levels from swing high/low."""
+        highs = [float(c["high"]) for c in candles]
+        lows = [float(c["low"]) for c in candles]
+        swing_high = max(highs); swing_low = min(lows)
+        diff = swing_high - swing_low
+        if diff == 0: return {}
+        return {
+            "swing_high": swing_high, "swing_low": swing_low,
+            "0.0": swing_high, "0.236": swing_high - diff * 0.236,
+            "0.382": swing_high - diff * 0.382, "0.500": swing_high - diff * 0.5,
+            "0.618": swing_high - diff * 0.618, "0.786": swing_high - diff * 0.786,
+            "1.0": swing_low
+        }
+
     def _find_key_levels(self, candles):
         """Detect Support & Resistance levels from swing highs/lows."""
         if len(candles) < 10: return [], []
@@ -459,145 +474,212 @@ class SignalEngine:
                 resistances.append(highs[i])
             if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
                 supports.append(lows[i])
-        # Deduplicate (cluster within 0.5%)
         def cluster(levels):
             if not levels: return []
             levels.sort(); result = [levels[0]]
             for l in levels[1:]:
                 if abs(l - result[-1]) / result[-1] > 0.005: result.append(l)
-            return result[-5:]  # Top 5
+            return result[-5:]
         return cluster(supports), cluster(resistances)
 
     def _deep_tf_analysis(self, candles, tf_label):
-        """Run FULL analysis on a timeframe: indicators + patterns + key levels + breakouts."""
+        """Run FULL analysis: indicators + ALL patterns + key levels + Fibonacci + breakouts."""
         if not candles or len(candles) < 5:
-            return {"direction": "NEUTRAL", "score": 50, "details": "no data"}
+            return {"direction": "NEUTRAL", "score": 50, "details": [], "patterns": [],
+                    "single_patterns": [], "combo_patterns": [], "chart_patterns": [],
+                    "supports": [], "resistances": [], "fib": {}, "pattern_score": 0,
+                    "near_support": False, "near_resistance": False, "near_fib": None}
 
         closes = [float(c["close"]) for c in candles]
+        current = closes[-1]
         score = 50; details = []
 
-        # RSI
+        # ── INDICATORS ──
         rsi = self._rsi(closes)
-        if rsi < 30: score += 18; details.append(f"RSI {rsi:.0f} (oversold +18)")
-        elif rsi < 40: score += 10; details.append(f"RSI {rsi:.0f} (low +10)")
-        elif rsi > 70: score -= 18; details.append(f"RSI {rsi:.0f} (overbought -18)")
-        elif rsi > 60: score -= 10; details.append(f"RSI {rsi:.0f} (high -10)")
-        else: details.append(f"RSI {rsi:.0f}")
+        if rsi < 30: score += 18; details.append(f"⚡ RSI {rsi:.0f} — Prey is EXHAUSTED, oversold! (+18)")
+        elif rsi < 40: score += 10; details.append(f"📉 RSI {rsi:.0f} — Prey weakening, buyers gathering (+10)")
+        elif rsi > 70: score -= 18; details.append(f"🔥 RSI {rsi:.0f} — Prey OVERHEATED, overbought! (-18)")
+        elif rsi > 60: score -= 10; details.append(f"📈 RSI {rsi:.0f} — Prey tiring at the top (-10)")
+        else: details.append(f"⚖️ RSI {rsi:.0f} — Balanced territory")
 
-        # EMA 9 vs 21
         if len(closes) >= 21:
             e9 = self._ema(closes, 9); e21 = self._ema(closes, 21)
-            if e9[-1] > e21[-1]: score += 12; details.append("EMA9>EMA21 (+12)")
-            else: score -= 12; details.append("EMA9<EMA21 (-12)")
+            if e9[-1] > e21[-1]:
+                score += 12; details.append("🐂 EMA9 > EMA21 — Short-term bulls LEADING (+12)")
+            else:
+                score -= 12; details.append("🐻 EMA9 < EMA21 — Bears seized short-term control (-12)")
 
-        # EMA 20 vs 50 (trend)
         if len(closes) >= 50:
             e20 = self._ema(closes, 20); e50 = self._ema(closes, 50)
-            if e20[-1] > e50[-1]: score += 8; details.append("EMA20>EMA50 (+8)")
-            else: score -= 8; details.append("EMA20<EMA50 (-8)")
+            if e20[-1] > e50[-1]:
+                score += 8; details.append("🏔️ EMA20 > EMA50 — Herd migrates UPHILL (+8)")
+            else:
+                score -= 8; details.append("🕳️ EMA20 < EMA50 — Herd heads DOWNHILL (-8)")
 
-        # MACD
         if len(closes) >= 26:
             macd = [a-b for a,b in zip(self._ema(closes,12), self._ema(closes,26))]
-            sig = self._ema(macd, 9)
-            if macd[-1] > sig[-1]: score += 5; details.append("MACD bullish (+5)")
-            else: score -= 5; details.append("MACD bearish (-5)")
+            sig_line = self._ema(macd, 9)
+            if macd[-1] > sig_line[-1]:
+                score += 5; details.append("📊 MACD bullish — Momentum favors the HUNTER (+5)")
+            else:
+                score -= 5; details.append("📊 MACD bearish — Momentum fading (-5)")
 
-        # Momentum (5-bar and 10-bar)
         if len(closes) >= 10:
             m5 = (closes[-1] - closes[-5]) / closes[-5] * 100
             m10 = (closes[-1] - closes[-10]) / closes[-10] * 100
             if m5 > 0: score += 3
             else: score -= 3
-            details.append(f"Mom5: {m5:+.1f}% Mom10: {m10:+.1f}%")
+            details.append(f"🏃 Momentum: 5-bar {'↑' if m5>0 else '↓'}{m5:+.1f}% | 10-bar {'↑' if m10>0 else '↓'}{m10:+.1f}%")
 
-        # Full pattern scan
+        # ── ALL PATTERNS (categorized) ──
         p_score, p_list, p_bias = self.patterns.analyze(candles)
         score += p_score
-        pattern_names = [p["name"] for p in p_list]
 
-        # Key levels
+        single_kw = ["Doji","Marubozu","Hammer","Star","Hanging","Spinning","Belt","Inverted"]
+        combo_kw = ["Engulfing","Harami","Piercing","Dark Cloud","Tweezer","Morning","Evening","Soldiers","Crows","Inside","Abandoned"]
+        chart_kw = ["Flag","Double","Head","Triangle","Breakout","Ascending","Descending"]
+
+        single_patterns = [p for p in p_list if any(k in p["name"] for k in single_kw)]
+        combo_patterns = [p for p in p_list if any(k in p["name"] for k in combo_kw)]
+        chart_patterns = [p for p in p_list if any(k in p["name"] for k in chart_kw)]
+
+        # ── FIBONACCI LEVELS ──
+        fib = self._calc_fibonacci(candles)
+        near_fib = None
+        if fib:
+            for lvl in ["0.236", "0.382", "0.500", "0.618", "0.786"]:
+                if abs(current - fib[lvl]) / current < 0.008:
+                    near_fib = lvl; break
+
+        # ── KEY LEVELS ──
         supports, resistances = self._find_key_levels(candles)
-        current = closes[-1]
         near_support = any(abs(current - s) / current < 0.01 for s in supports)
         near_resistance = any(abs(current - r) / current < 0.01 for r in resistances)
-        if near_support: details.append("⚡ Near SUPPORT")
-        if near_resistance: details.append("⚡ Near RESISTANCE")
-
-        # Breakout checks from patterns
-        for p in p_list:
-            if "Breakout" in p["name"] or "Flag" in p["name"]:
-                details.append(f"💥 {p['name']}")
+        if near_support: details.append("⚡ Prey stands at SUPPORT — watch for bounce!")
+        if near_resistance: details.append("⚡ Prey hits RESISTANCE wall — watch for rejection!")
 
         score = max(0, min(100, score))
         direction = "BULLISH" if score >= 55 else "BEARISH" if score <= 45 else "NEUTRAL"
 
         return {
-            "direction": direction, "score": score, "rsi": rsi,
-            "details": details, "patterns": pattern_names,
-            "supports": supports, "resistances": resistances,
-            "near_support": near_support, "near_resistance": near_resistance
+            "direction": direction, "score": score, "rsi": rsi, "details": details,
+            "single_patterns": single_patterns, "combo_patterns": combo_patterns,
+            "chart_patterns": chart_patterns, "patterns": [p["name"] for p in p_list],
+            "pattern_score": p_score,
+            "supports": supports, "resistances": resistances, "fib": fib,
+            "near_support": near_support, "near_resistance": near_resistance, "near_fib": near_fib
         }
 
     def update_daily_bias(self, symbol="BTCUSD"):
-        """LAYER 1: Deep macro analysis from 1W + 1D (4 months of data).
-        Runs all patterns, indicators, key levels, breakouts.
-        Caches for the day. Resets at midnight UTC."""
+        """LAYER 1: The wolf surveys the entire landscape before the hunt.
+        Reads 4 months of history, runs all indicators, all 27+ patterns,
+        Fibonacci retracements, support/resistance. Locked for the day."""
         today = datetime.now(pytz.UTC).date()
-
-        # Only refresh once per day (or first run)
         if self.bias_date == today and self.daily_bias != "UNKNOWN":
             return
 
-        log.info("")
-        log.info("╔══════════════════════════════════════════════════════════╗")
-        log.info("║     🌍 DEEP MACRO ANALYSIS — 4-Month Review              ║")
-        log.info("╚══════════════════════════════════════════════════════════╝")
-        self.daily_report = []
-        bias_votes = []
+        spot = self.api.get_spot_price(symbol)
 
-        for tf, label, candle_count in [("1w", "WEEKLY", 20), ("1d", "DAILY", 120)]:
-            candles = self.api.get_candles(symbol, tf, candle_count)
+        log.info("")
+        log.info("╔══════════════════════════════════════════════════════════════════╗")
+        log.info("║  🐺 THE WOLF SURVEYS THE LANDSCAPE — Deep Macro Reconnaissance  ║")
+        log.info("║  Scanning months of terrain before choosing the hunting ground   ║")
+        log.info("╚══════════════════════════════════════════════════════════════════╝")
+        self.daily_report = []; bias_votes = []
+
+        tf_configs = [("1w", "WEEKLY", 20, "🗻 HIGH GROUND"), ("1d", "DAILY", 120, "🌲 FOREST FLOOR")]
+
+        for tf, label, count, terrain in tf_configs:
+            candles = self.api.get_candles(symbol, tf, count)
             if not candles:
-                log.info(f"    📅 {label}: ⚪ No data available")
+                log.info(f"    📅 {label}: ⚪ Fog covers {terrain} — no visibility")
                 continue
 
             log.info(f"")
-            log.info(f"    ━━━ 📅 {label} ANALYSIS ({len(candles)} candles ≈ {label.lower()} history) ━━━")
+            log.info(f"    {'━'*62}")
+            log.info(f"    {terrain} — {label} RECONNAISSANCE ({len(candles)} candles)")
+            log.info(f"    {'━'*62}")
+
             result = self._deep_tf_analysis(candles, label)
 
-            emoji = "🟢" if result['direction']=="BULLISH" else "🔴" if result['direction']=="BEARISH" else "⚪"
-            log.info(f"    {emoji} Verdict: {result['direction']} | Score: {result['score']}/100")
+            # Verdict with hunter narrative
+            if result['direction'] == "BULLISH":
+                log.info(f"    🟢 The {terrain.split(' ')[-1]} favors the BULLS — prey moves UPHILL | Score: {result['score']}/100")
+            elif result['direction'] == "BEARISH":
+                log.info(f"    🔴 The BEARS dominate {terrain.split(' ')[-1]} — prey stampedes DOWN | Score: {result['score']}/100")
+            else:
+                log.info(f"    ⚪ Territory is CONTESTED — neither side wins | Score: {result['score']}/100")
 
-            # Log indicators
+            # Indicators
+            log.info(f"    📡 TERRAIN SIGNALS:")
             for d in result['details']:
-                log.info(f"        • {d}")
+                log.info(f"        {d}")
 
-            # Log patterns found
-            if result['patterns']:
-                log.info(f"        🕯️ Patterns ({len(result['patterns'])}):'")
-                for pn in result['patterns'][:6]:
-                    log.info(f"            {pn}")
+            # ── Single Candlestick Formations ──
+            if result.get('single_patterns'):
+                log.info(f"    🕯️ SINGLE TRACKS ({len(result['single_patterns'])} footprints):")
+                for p in result['single_patterns']:
+                    power = "⚡ STRONG" if abs(p['score']) >= 8 else "💨 Moderate" if abs(p['score']) >= 5 else "🌫️ Faint"
+                    log.info(f"        {p['name']} ({p['score']:+d}) — {power}")
 
-            # Log key levels
+            # ── Combined Candlestick Formations ──
+            if result.get('combo_patterns'):
+                log.info(f"    🕯️🕯️ COMBINED TRACKS ({len(result['combo_patterns'])} formations):")
+                for p in result['combo_patterns']:
+                    power = "⚡⚡ POWERFUL" if abs(p['score']) >= 12 else "⚡ STRONG" if abs(p['score']) >= 8 else "💨 Moderate"
+                    log.info(f"        {p['name']} ({p['score']:+d}) — {power}")
+
+            # ── Chart Pattern Structures ──
+            if result.get('chart_patterns'):
+                log.info(f"    📐 TERRAIN STRUCTURES ({len(result['chart_patterns'])} found):")
+                for p in result['chart_patterns']:
+                    if "Breakout" in p['name']:
+                        log.info(f"        🚀 BREAKOUT: {p['name']} ({p['score']:+d}) — The prey BREAKS FREE!")
+                    elif "pending" in p['name']:
+                        log.info(f"        ⏳ FORMING: {p['name']} — Coiling... breakout imminent!")
+                    else:
+                        log.info(f"        📊 DETECTED: {p['name']} ({p['score']:+d})")
+
+            # Pattern score summary
+            ps = result.get('pattern_score', 0)
+            total_p = len(result.get('patterns', []))
+            if total_p > 0:
+                e = "🟢" if ps > 0 else "🔴" if ps < 0 else "⚪"
+                log.info(f"    {e} Pattern Verdict: {ps:+d} points from {total_p} formations")
+
+            # ── Fibonacci Map ──
+            fib = result.get('fib', {})
+            if fib:
+                log.info(f"    📏 FIBONACCI MAP (Swing ${fib.get('swing_low',0):,.0f} → ${fib.get('swing_high',0):,.0f}):")
+                for lvl in ["0.236", "0.382", "0.500", "0.618", "0.786"]:
+                    fv = fib.get(lvl, 0)
+                    tags = ""
+                    if lvl == "0.618": tags += " 🏆 GOLDEN RATIO"
+                    if lvl == "0.500": tags += " ⚖️ HALF"
+                    if result.get('near_fib') == lvl: tags += " ◄━━ 🐺 PREY IS HERE"
+                    log.info(f"        Fib {lvl}: ${fv:,.0f}{tags}")
+                if result.get('near_fib'):
+                    log.info(f"    ⚡ PRICE AT FIB {result['near_fib']} — Critical decision zone!")
+
+            # ── Support & Resistance ──
             if result['supports']:
-                log.info(f"        🟢 Support levels: {', '.join(f'${s:,.0f}' for s in result['supports'])}")
+                log.info(f"    🟢 SUPPORT FLOORS: {' | '.join(f'${s:,.0f}' for s in result['supports'])}")
             if result['resistances']:
-                log.info(f"        🔴 Resistance levels: {', '.join(f'${r:,.0f}' for r in result['resistances'])}")
-
-            # Breakout alerts
+                log.info(f"    🔴 RESISTANCE CEILINGS: {' | '.join(f'${r:,.0f}' for r in result['resistances'])}")
             if result.get('near_support'):
-                log.info(f"        ⚡ PRICE AT SUPPORT — Watch for bounce!")
+                log.info(f"    ⚡🟢 The prey stands on SUPPORT ground — potential bounce!")
             if result.get('near_resistance'):
-                log.info(f"        ⚡ PRICE AT RESISTANCE — Watch for rejection!")
+                log.info(f"    ⚡🔴 The prey presses against RESISTANCE — potential rejection!")
 
             bias_votes.append(result['direction'])
             self.daily_report.append({"tf": label, **result})
             self.key_levels[label] = {"supports": result['supports'], "resistances": result['resistances']}
 
-        # ── FINAL BIAS DETERMINATION ──
+        # ══ THE WOLF'S FINAL VERDICT ══
         log.info(f"")
-        log.info(f"    ━━━ 🏷️  FINAL BIAS DETERMINATION ━━━")
+        log.info(f"    {'━'*62}")
+        log.info(f"    🏷️  THE WOLF'S VERDICT — Today's Hunting Strategy")
+        log.info(f"    {'━'*62}")
         bull_count = bias_votes.count("BULLISH")
         bear_count = bias_votes.count("BEARISH")
 
@@ -608,29 +690,31 @@ class SignalEngine:
         else:
             self.daily_bias = "CHOPPY"
 
-        emoji = "🟢" if self.daily_bias=="BULLISH" else "🔴" if self.daily_bias=="BEARISH" else "🟡"
-
         if self.daily_bias == "BULLISH":
-            rule = "Only CALL options. Ride the trend."
+            log.info(f"    🟢🐂 THE TERRAIN FAVORS THE BULLS")
+            log.info(f"    📋 Strategy: Hunt CALL options only. The herd moves uphill.")
+            log.info(f"    🎯 Look for: Pullbacks to support / Fib 0.382-0.618 for entries")
         elif self.daily_bias == "BEARISH":
-            rule = "Only PUT options. Ride the trend."
+            log.info(f"    🔴🐻 THE BEARS RULE THIS TERRITORY")
+            log.info(f"    📋 Strategy: Hunt PUT options only. The herd stampedes down.")
+            log.info(f"    🎯 Look for: Rallies to resistance / Fib 0.382-0.618 for entries")
         else:
-            rule = "HEDGE MODE — Buy BOTH call + put to capture volatility."
+            log.info(f"    🟡⚔️ THE BATTLEFIELD IS CONTESTED — CHOPPY TERRITORY")
+            log.info(f"    📋 Strategy: HEDGE MODE — Buy BOTH call + put.")
+            log.info(f"    🎯 Profit from volatility spikes in either direction")
 
-        log.info(f"    {emoji} TODAY'S BIAS: {self.daily_bias}")
-        log.info(f"    📋 Rule: {rule}")
-
-        # Log any breakout patterns from macro TFs
+        # Macro pattern alerts
         for r in self.daily_report:
             for pn in r.get('patterns', []):
-                if any(kw in pn for kw in ['Breakout', 'Flag', 'Triangle', 'Head', 'Double']):
-                    log.info(f"    💥 MACRO PATTERN: {pn} on {r['tf']}")
+                if any(kw in pn for kw in ['Breakout', 'Flag', 'Triangle', 'Head', 'Double', 'Soldiers', 'Crows']):
+                    log.info(f"    💥 MACRO SIGNAL: {pn} on {r['tf']} — act accordingly!")
 
         log.info(f"")
-        log.info(f"    ⏰ This analysis is locked until midnight UTC.")
-        log.info("╔══════════════════════════════════════════════════════════╗")
-        log.info(f"║  BIAS: {self.daily_bias:8s} | Next refresh: tomorrow 00:00 UTC    ║")
-        log.info("╚══════════════════════════════════════════════════════════╝")
+        log.info(f"    ⏰ This terrain map is LOCKED until midnight UTC.")
+        log.info(f"    🐺 The wolf has surveyed. Now we wait for the perfect moment.")
+        log.info("╔══════════════════════════════════════════════════════════════════╗")
+        log.info(f"║  BIAS: {self.daily_bias:8s} | BTC: ${spot:>10,.2f} | Refresh: midnight UTC  ║")
+        log.info("╚══════════════════════════════════════════════════════════════════╝")
 
         self.bias_date = today
         self.bias_last_updated = datetime.now(pytz.UTC)

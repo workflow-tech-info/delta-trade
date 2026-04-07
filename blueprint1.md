@@ -1,84 +1,396 @@
-# 🐺 DELTA OPTIONS BOT v5.0 — "One Kill a Day" Blueprint
+# 🐺 THE WOLF'S PLAYBOOK — Options Bot v5.0
 
-> *One blockbuster trade per day. Full conviction. Full wallet. Full leverage.*
+> *"A wolf never hunts blindly. It reads the wind, studies the terrain, watches the herd for days — and strikes once, with absolute precision."*
+> 
+> This bot is that wolf. It watches Bitcoin like a predator watches prey. It studies the landscape across weeks and days, identifies the strongest signals, and makes ONE devastating trade per day — with full conviction.
 
-## 4-Layer Decision System
+---
 
-### LAYER 1: Daily Bias (1W + 1D candles)
-Runs at startup + every 4 hours. Sets a global variable for the day:
-- **BULLISH** → Only CALL options allowed
-- **BEARISH** → Only PUT options allowed  
-- **CHOPPY** → No trading at all (conflicting weekly vs daily)
+## 🗺️ THE HUNTING GROUND — What This Bot Actually Does
 
-Uses: EMA9 vs EMA21, RSI, last 5 candle direction on Weekly and Daily charts.
+Imagine you're a wolf standing on a mountaintop, looking down at a vast valley where herds of animals (price movements) roam. Before you run down there and attack, you need to answer three questions:
 
-### LAYER 2: Higher TF Confirmation (4h, 1h, 15m)
-Every cycle, checks if at least 2 of 3 higher timeframes agree with daily bias.
-If they don't → no trade. Uses: EMA crossover, RSI, momentum.
+1. **Which way is the herd moving?** (Is BTC going UP or DOWN this week?)
+2. **Is this the right moment to strike?** (Are the short-term signals confirming?)
+3. **Which prey is the easiest to catch?** (Which option contract gives us the best edge?)
 
-### LAYER 3: 5m Entry Trigger (Base Timeframe)
-The actual entry signal from the 5-minute chart. Must score ≥ 70/100.
+The bot answers all three questions automatically, every 2 minutes, 24/7.
 
-**Indicators:** RSI(14), EMA(9 vs 21), MACD(12,26,9), 5-bar momentum
+---
 
-**27 Patterns Detected:**
-| # | Pattern | Type | Score |
-|---|---------|------|-------|
-| 1 | Dragonfly Doji | Single | +5 |
-| 2 | Gravestone Doji | Single | -5 |
-| 3 | Long-Legged Doji | Single | 0 |
-| 4 | Bullish Marubozu | Single | +8 |
-| 5 | Bearish Marubozu | Single | -8 |
-| 6 | Hammer | Single | +8 |
-| 7 | Hanging Man | Single | -5 |
-| 8 | Inverted Hammer | Single | +6 |
-| 9 | Shooting Star | Single | -8 |
-| 10 | Spinning Top | Single | 0 |
-| 11 | Bullish Belt Hold | Single | +5 |
-| 12 | Bearish Belt Hold | Single | -5 |
-| 13 | Bullish Engulfing | 2-bar | +10 |
-| 14 | Bearish Engulfing | 2-bar | -10 |
-| 15 | Bullish Harami | 2-bar | +6 |
-| 16 | Bearish Harami | 2-bar | -6 |
-| 17 | Piercing Line | 2-bar | +10 |
-| 18 | Dark Cloud Cover | 2-bar | -10 |
-| 19 | Tweezer Bottom | 2-bar | +8 |
-| 20 | Tweezer Top | 2-bar | -8 |
-| 21 | Morning Star | 3-bar | +12 |
-| 22 | Evening Star | 3-bar | -12 |
-| 23 | Three White Soldiers | 3-bar | +12 |
-| 24 | Three Black Crows | 3-bar | -12 |
-| 25 | Three Inside Up | 3-bar | +10 |
-| 26 | Three Inside Down | 3-bar | -10 |
-| 27 | Bullish Abandoned Baby | 3-bar | +15 |
-| 28 | Bearish Abandoned Baby | 3-bar | -15 |
+## 🏗️ THE 4-LAYER HUNT — How Decisions Are Made
 
-**Chart Patterns:** Double Top/Bottom, Bullish/Bearish Flag, Head & Shoulders, Inverse H&S, Symmetrical Triangle
+Think of it like a 4-step checklist. ALL 4 must pass before we trade.
 
-### LAYER 4: Full Wallet Execution
-- Fetch wallet balance → 100% allocation
-- Set 50x leverage via API
-- Select best option by Greeks (Delta, Gamma, Theta, Vega, IV)
-- Place market order
-- Set trailing stop at 50% from peak
-
-## Position Sizing
 ```
-Wallet: $200
-Leverage: 50x
-Notional: $200 × 50 = $10,000
-Quantity: $10,000 / option_ask_price
+LAYER 1: 🗻 Survey the Landscape  (Weekly + Daily charts)
+    "Is the overall market bullish, bearish, or choppy?"
+    → Sets the DAILY BIAS (locked for 24 hours)
+         │
+         ▼
+LAYER 2: 🌲 Check the Forest     (4-hour, 1-hour, 15-min charts)
+    "Do the medium-term trends agree with our daily bias?"
+    → Need at least 2 of 3 to agree
+         │
+         ▼
+LAYER 3: 🎯 Spot the Prey        (5-minute chart — our main hunting ground)
+    "Is there a specific entry signal RIGHT NOW?"
+    → Score must be ≥ 70 out of 100
+         │
+         ▼
+LAYER 4: 🏹 Attack               (Option selection + order execution)
+    "Pick the best option contract using Greeks, set leverage, execute!"
+    → Full wallet × 50x leverage → Trailing stop protects profits
 ```
 
-## Trailing Stop
-- Starts at entry × 0.50
-- Tracks highest price seen (peak)
-- Stop = peak × 0.50 (only moves UP)
-- No take-profit ceiling — ride the wave
+If ANY layer fails → **No trade.** The wolf waits.
 
-## Daily Rules
-- Max 1 trade per day (resets at UTC midnight)
-- Max 8 hour hold time
-- No trading on CHOPPY days
-- Entry must match daily bias direction
-- Score must be ≥ 70/100
+---
+
+## 🗻 LAYER 1: Survey the Landscape (The Most Important Part)
+
+### What Happens Here
+
+Every day at midnight UTC, the bot does a **deep reconnaissance** — like a wolf climbing to the highest peak to survey the entire territory before deciding where to hunt.
+
+It downloads **months of price data** and runs EVERYTHING on it:
+
+### 📅 Weekly Chart (20 candles = ~5 months of history)
+
+The wolf checks the **"high ground"** — the big picture trend that takes weeks to form.
+
+### 📅 Daily Chart (120 candles = ~4 months of history)
+
+The wolf checks the **"forest floor"** — yesterday's action and recent momentum.
+
+### What Gets Analyzed on Each Timeframe
+
+#### 📡 Indicators (The Wolf's Senses)
+
+| Indicator | What It Is (Simple) | What the Wolf Sees |
+|-----------|--------------------|--------------------|
+| **RSI** (Relative Strength Index) | Measures if price has gone too far up or too far down | RSI < 30 = "Prey is EXHAUSTED" (oversold, likely to bounce UP) |
+| | | RSI > 70 = "Prey is OVERHEATED" (overbought, likely to drop DOWN) |
+| **EMA 9 vs 21** | Two moving averages — fast vs slow | Fast above slow = "Short-term bulls are LEADING" |
+| | | Fast below slow = "Bears seized control" |
+| **EMA 20 vs 50** | Same concept but bigger picture | EMA20 > EMA50 = "The herd migrates UPHILL" |
+| | | EMA20 < EMA50 = "The herd heads DOWNHILL" |
+| **MACD** | Momentum indicator (are things speeding up?) | MACD > Signal = "Momentum favors the hunter" |
+| | | MACD < Signal = "Momentum fading, prey escaping" |
+| **Momentum** | Simply: is price higher now than 5/10 bars ago? | Up = bulls pushing, Down = bears pushing |
+
+> **For a total beginner:** Think of RSI like a thermometer. Below 30°? The market has a fever of selling — it's going to recover. Above 70°? Market is overheating with buying — it's going to cool down.
+
+#### 🕯️ Candlestick Patterns (The Wolf's Footprint Reading)
+
+Every candle on a chart is a record of what happened in that time period. The body shows open→close, the wicks show how high/low it went. When candles form specific shapes, they tell us what the buyers and sellers are doing.
+
+##### 🕯️ Single Candle Tracks (1 candle = 1 footprint)
+
+| Pattern | What It Looks Like | What It Means | Score |
+|---------|-------------------|---------------|-------|
+| **🟢 Hammer** | Small body at TOP, long wick going DOWN | "The sellers tried to push price down, but buyers fought back and WON" — bullish reversal | +8 |
+| **🔴 Shooting Star** | Small body at BOTTOM, long wick going UP | "Buyers tried to push up, but sellers slammed them back DOWN" — bearish reversal | -8 |
+| **🟢 Bullish Marubozu** | Full green candle, NO wicks at all | "Pure bull power — buyers dominated from open to close with zero resistance" | +8 |
+| **🔴 Bearish Marubozu** | Full red candle, NO wicks at all | "Pure bear power — sellers crushed it the entire bar" | -8 |
+| **⚪ Doji** | Tiny body, cross-shaped | "Indecision — buyers and sellers are equally matched. Something is about to change." | 0 |
+| **🟢 Dragonfly Doji** | Cross with long bottom wick | "Sellers pushed down hard but got completely rejected — bulls are coming" | +5 |
+| **🔴 Gravestone Doji** | Cross with long top wick | "Buyers pushed up but got smacked down — bears are coming" | -5 |
+| **🟢 Inverted Hammer** | Small body at bottom, long upper wick, after downtrend | "First sign that buyers are trying to take control" | +6 |
+| **🔴 Hanging Man** | Hammer shape but after uptrend | "Warning — the uptrend may be exhausting" | -5 |
+| **⚪ Spinning Top** | Small body, equal wicks both ways | "The market is confused. Wait for clarity." | 0 |
+| **🟢 Bullish Belt Hold** | Opens at the very LOW, strong close near HIGH | "A forceful bullish open — buyers grabbed control from the start" | +5 |
+| **🔴 Bearish Belt Hold** | Opens at the very HIGH, closes near LOW | "A forceful bearish open — sellers took charge immediately" | -5 |
+
+##### 🕯️🕯️ Combined Candle Formations (2-3 candles = a story)
+
+| Pattern | What Happens | The Story | Score |
+|---------|-------------|-----------|-------|
+| **🟢 Bullish Engulfing** | Small red candle → BIG green candle that swallows it | "The bears made a small push. Then the bulls came in like a TIDAL WAVE and erased everything. Bulls are in control now." | +10 |
+| **🔴 Bearish Engulfing** | Small green → BIG red swallows it | "Bulls tried. Bears CRUSHED them. Trend reversal incoming." | -10 |
+| **🟢 Morning Star** | Big red → tiny candle → Big green (3 bars) | "A dark night (red), then a small star appears (tiny body = indecision at bottom), then the sun RISES (big green). The dawn of a new uptrend." | +12 |
+| **🔴 Evening Star** | Big green → tiny → Big red | "A glorious day, then a star at the peak, then DARKNESS falls. The uptrend is dying." | -12 |
+| **🟢 Three White Soldiers** | 3 big green candles in a row, each higher | "Three warriors march uphill in formation. Strong, relentless buying pressure." | +12 |
+| **🔴 Three Black Crows** | 3 big red candles in a row, each lower | "Three crows circle overhead. Death is coming for the bulls." | -12 |
+| **🟢 Piercing Line** | Red candle → green candle that closes above 50% of the red | "The bears stabbed down, but bulls PIERCED through their defense halfway back up" | +10 |
+| **🔴 Dark Cloud Cover** | Green → red that closes below 50% of the green | "A dark cloud rolls over the bullish sky. Trouble ahead." | -10 |
+| **🟢 Tweezer Bottom** | Two candles with the SAME low, opposite colors | "The floor was tested TWICE and held both times. Strong support!" | +8 |
+| **🔴 Tweezer Top** | Two candles with the SAME high, opposite colors | "The ceiling was tested twice and rejected both times. Can't break through!" | -8 |
+| **🟢 Three Inside Up** | Bearish → Bullish Harami → Close higher | "Bear attacks, gets trapped inside, then bulls finish with a killing blow" | +10 |
+| **🔴 Three Inside Down** | Bullish → Bearish Harami → Close lower | "Bull gets trapped, bears escape and take over" | -10 |
+| **🟢 Bullish Abandoned Baby** | Red → Doji gaps DOWN → Green gaps UP | "The bears abandoned their baby in the wilderness. Bulls rescued it. EXTREMELY rare = EXTREMELY strong signal" | +15 |
+| **🔴 Bearish Abandoned Baby** | Green → Doji gaps UP → Red gaps DOWN | "Bulls abandoned their position at the top. Panic selling follows." | -15 |
+
+> **For a total beginner:** Think of candlestick patterns like reading animal tracks in the snow. Each track tells a story — were the animals running, resting, or fighting? Certain combinations of tracks tell you EXACTLY what happened and what's likely to happen next.
+
+#### 📐 Chart Patterns (The Terrain Itself)
+
+These are bigger structures formed over many candles — like looking at the shape of a mountain range.
+
+| Pattern | What It Looks Like | The Story | Score |
+|---------|-------------------|-----------|-------|
+| **🟢 Double Bottom** | Price drops, bounces, drops again to SAME level, bounces again | "The ground was tested twice and it's SOLID. This is the floor. Price goes UP from here." | +10 |
+| **🔴 Double Top** | Price rises, drops, rises to SAME level, drops again | "The ceiling was hit twice. Can't break through. Price goes DOWN." | -10 |
+| **🟢 Bullish Flag** | Strong up-move → tight sideways pause | "The army advanced, paused to rest, about to charge AGAIN upward" | +8 |
+| **🔴 Bearish Flag** | Strong down-move → tight sideways pause | "The avalanche paused briefly. More falling to come." | -8 |
+| **🔴 Head & Shoulders** | Three peaks — middle one highest | "The three-headed dragon. Left shoulder, HEAD, right shoulder. When the neckline breaks — CRASH." | -12 |
+| **🟢 Inverse Head & Shoulders** | Three troughs — middle one lowest | "The Phoenix. Three dives, the middle one deepest. When neckline breaks — LIFTOFF." | +12 |
+| **🟢 Ascending Triangle** | Same highs + rising lows | "Buyers keep pushing higher, resistance will break. BULLISH." | +8 |
+| **🔴 Descending Triangle** | Same lows + falling highs | "Sellers keep pushing lower, support will crack. BEARISH." | -8 |
+| **🟢 Triangle Breakout UP** | Was coiling, now breaks above | "The spring was compressed. It just LAUNCHED upward!" | +12 |
+| **🔴 Triangle Breakout DOWN** | Was coiling, now breaks below | "The floor gave way. Freefall!" | -12 |
+
+#### 📏 Fibonacci Levels (The Wolf's Sacred Geometry)
+
+Fibonacci retracement is based on natural mathematical ratios (0.618 is the "Golden Ratio" — it appears everywhere in nature). When price moves up and then pulls back, it tends to find support at these specific levels:
+
+```
+Swing High: $73,000  (the peak)
+    │
+    │  Fib 0.236: $71,638    ← Shallow pullback (barely resting)
+    │  Fib 0.382: $70,468    ← Moderate pullback (healthy correction)
+    │  Fib 0.500: $69,500    ← Half-way (balanced)
+    │  Fib 0.618: $68,532    ← 🏆 GOLDEN RATIO (strongest support!)
+    │  Fib 0.786: $67,302    ← Deep pullback (last chance for bulls)
+    │
+Swing Low:  $66,000  (the valley)
+```
+
+> **For a total beginner:** Imagine price is a rubber ball. When you throw it up (rally), it comes back down (pullback). Fibonacci tells us WHERE the ball is most likely to bounce. The 0.618 level (Golden Ratio) is like a trampoline — price bounces from there more than anywhere else.
+
+The bot calculates these levels on both weekly and daily charts and logs `◄━━ 🐺 PREY IS HERE` when price is sitting right on a Fibonacci level.
+
+#### 🟢🔴 Support & Resistance (Floors and Ceilings)
+
+- **Support** = price levels where BTC has bounced UP multiple times (like a floor)
+- **Resistance** = price levels where BTC has been rejected DOWN multiple times (like a ceiling)
+
+The bot automatically detects these from swing highs/lows over 4 months.
+
+### The Final Verdict — Daily Bias
+
+After all this analysis, the wolf makes ONE decision for the entire day:
+
+| Verdict | What It Means | Strategy |
+|---------|--------------|----------|
+| **🟢 BULLISH** | Weekly AND Daily agree: UP | Only buy CALL options (profit when BTC rises) |
+| **🔴 BEARISH** | Weekly AND Daily agree: DOWN | Only buy PUT options (profit when BTC falls) |
+| **🟡 CHOPPY** | Weekly and Daily DISAGREE | HEDGE MODE — buy both call AND put to profit from volatility |
+
+This verdict is **LOCKED for 24 hours**. No changing mid-day.
+
+---
+
+## 🌲 LAYER 2: Check the Forest (Higher TF Confirmation)
+
+Every 2 minutes, the bot checks three medium-term timeframes:
+
+| Timeframe | Purpose |
+|-----------|---------|
+| **4-hour** | Intraday macro direction |
+| **1-hour** | Swing momentum |
+| **15-minute** | Near-term flow |
+
+**Rule:** At least 2 of 3 must agree with the daily bias.
+
+If the daily bias is BULLISH but the 4h and 1h are BEARISH → **No trade.** The wolf doesn't attack when the terrain is unfavorable.
+
+---
+
+## 🎯 LAYER 3: Spot the Prey (5-Minute Entry Trigger)
+
+This is where the actual entry signal comes from. The bot watches the **5-minute chart** and runs:
+
+1. **RSI** — Is price oversold (buy zone) or overbought (sell zone)?
+2. **EMA 9 vs 21** — Is the fast average above or below the slow?
+3. **MACD** — Did a bullish or bearish crossover just happen?
+4. **Momentum** — Is the 5-bar trend up or down?
+5. **ALL 27+ candlestick patterns** — Same as the macro analysis
+6. **ALL chart patterns** — Double top/bottom, triangles, flags, H&S
+
+Everything adds up to a **score from 0 to 100**.
+
+**Score ≥ 70 = ATTACK!** Score below 70 = wait.
+
+> **For a total beginner:** It's like a checklist for a surgeon before operating. Every item must check out. If even one thing is wrong — we don't cut.
+
+---
+
+## 🏹 LAYER 4: Attack! (Option Selection + Execution)
+
+### Step 1: Fetch the Wallet
+```
+Wallet balance: $200
+```
+
+### Step 2: Full Wallet × 50x Leverage
+```
+$200 × 50 = $10,000 notional exposure
+(You control $10,000 worth of options with just $200)
+```
+
+### Step 3: Pick the Best Option (Greeks Analysis)
+
+The bot fetches all available options and scores each one by its "Greeks" — think of these as the prey's vital stats:
+
+| Greek | Hunter Name | What It Tells Us | What We Want |
+|-------|------------|------------------|-------------|
+| **Delta (Δ)** | ⚡ Speed | How fast the option moves when BTC moves $1 | 0.30-0.50 (sweet spot) |
+| **Gamma (Γ)** | 🎯 Reflexes | How fast Delta itself changes (acceleration) | High = explosive gains |
+| **Theta (Θ)** | 🩸 Bleed | How much value the option loses PER DAY just from time passing | Low = less daily cost |
+| **Vega (V)** | 💪 Vol Sensitivity | How much the option gains when volatility spikes | High = profits from chaos |
+| **IV** | 🔥 Fear Level | How scared/excited the market is right now | Low = cheap entry |
+
+The bot logs the top 3 candidates with their strengths and weaknesses, then picks the BEST one.
+
+### Step 4: Place the Order
+Market order → instant fill.
+
+### Step 5: Trailing Stop Loss Activates
+
+```
+Entry: $1,000 (the option cost this much)
+Initial Stop: $500 (50% below entry)
+
+Price rises to $1,500 → Stop rises to $750 ✅
+Price rises to $2,000 → Stop rises to $1,000 ✅ (breakeven!)
+Price rises to $3,000 → Stop rises to $1,500 ✅ (locked +50% profit!)
+Price drops to $1,500 → STOP HIT → EXIT at $1,500 (+50% profit!)
+```
+
+**The stop ONLY moves UP, never down.** This means:
+- If price goes up, we ride it with no ceiling
+- If price reverses, we still keep most of our gains
+- If price tanks immediately, max loss is 50%
+
+---
+
+## 🟡 CHOPPY MODE — The Hedge
+
+When the market is "choppy" (weekly says UP, daily says DOWN, or vice versa), the wolf doesn't sit idle. Instead, it plays BOTH sides:
+
+1. Buy a **CALL option** (50% of wallet) — profits if BTC goes UP
+2. Buy a **PUT option** (50% of wallet) — profits if BTC goes DOWN
+
+**Why?** In choppy markets, big moves STILL happen — we just don't know which direction. By buying both, we profit from the MOVE itself, regardless of direction. If BTC swings 5%, one option loses but the other EXPLODES.
+
+---
+
+## 📋 DAILY RULES — The Wolf's Code
+
+| Rule | Value | Why |
+|------|-------|-----|
+| Max trades per day | 1 (2 in hedge mode) | One blockbuster trade, not 20 mediocre ones |
+| Max hold time | 8 hours | We're day traders, not investors |
+| Min score for entry | 70/100 | Only the BEST signals |
+| Trailing stop | 50% from peak | Ride winners, cut losers |
+| Leverage | 50x | Amplify gains (and risk) |
+| Position sizing | 100% of wallet | Full conviction |
+| Cycle interval | 2 minutes | Fast enough for 5m candle trading |
+| Bias refresh | Once per day (midnight UTC) | Macro picture doesn't change hourly |
+
+---
+
+## 📊 WHAT THE LOGS LOOK LIKE
+
+When the bot starts, you'll see something like this:
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║  🐺 THE WOLF SURVEYS THE LANDSCAPE — Deep Macro Reconnaissance  ║
+║  Scanning months of terrain before choosing the hunting ground   ║
+╚══════════════════════════════════════════════════════════════════╝
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    🗻 HIGH GROUND — WEEKLY RECONNAISSANCE (20 candles)
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    🟢 The HIGH GROUND favors the BULLS — prey moves UPHILL | Score: 72/100
+    📡 TERRAIN SIGNALS:
+        📉 RSI 42 — Prey weakening, buyers gathering (+10)
+        🐂 EMA9 > EMA21 — Short-term bulls LEADING (+12)
+        🏔️ EMA20 > EMA50 — Herd migrates UPHILL (+8)
+        📊 MACD bullish — Momentum favors the HUNTER (+5)
+        🏃 Momentum: 5-bar ↑+2.1% | 10-bar ↑+4.3%
+    🕯️ SINGLE TRACKS (2 footprints):
+        🟢 Hammer (+8) — ⚡ STRONG
+        🟢 Bullish Marubozu (+8) — ⚡ STRONG
+    🕯️🕯️ COMBINED TRACKS (1 formation):
+        🟢 Bullish Engulfing (+10) — ⚡ STRONG
+    📐 TERRAIN STRUCTURES (1 found):
+        🚀 BREAKOUT: 🟢 Triangle Breakout UP (+12) — The prey BREAKS FREE!
+    🟢 Pattern Verdict: +38 points from 4 formations
+    📏 FIBONACCI MAP (Swing $62,400 → $73,200):
+        Fib 0.236: $70,652
+        Fib 0.382: $69,077
+        Fib 0.500: $67,800 ⚖️ HALF
+        Fib 0.618: $66,523 🏆 GOLDEN RATIO
+        Fib 0.786: $64,922
+    🟢 SUPPORT FLOORS: $64,800 | $66,200 | $67,500
+    🔴 RESISTANCE CEILINGS: $71,500 | $73,200
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    🏷️  THE WOLF'S VERDICT — Today's Hunting Strategy
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    🟢🐂 THE TERRAIN FAVORS THE BULLS
+    📋 Strategy: Hunt CALL options only. The herd moves uphill.
+    🎯 Look for: Pullbacks to support / Fib 0.382-0.618 for entries
+    💥 MACRO SIGNAL: 🟢 Triangle Breakout UP on WEEKLY — act accordingly!
+
+    ⏰ This terrain map is LOCKED until midnight UTC.
+    🐺 The wolf has surveyed. Now we wait for the perfect moment.
+╔══════════════════════════════════════════════════════════════════╗
+║  BIAS: BULLISH  | BTC: $68,715.50 | Refresh: midnight UTC      ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+## ⚠️ RISKS — The Wolf Can Still Bleed
+
+| Risk | What It Means | Mitigation |
+|------|--------------|------------|
+| **50% max loss per trade** | Trailing stop at 50% means you can lose half your premium | This is aggressive by design — one big win covers multiple losses |
+| **50x leverage** | Small moves are amplified 50× (2% move = 100% P&L) | Options have natural leverage already; 50x is the exchange margin |
+| **Options expire worthless** | If BTC doesn't move enough by expiry, premium = $0 | Max 8-hour hold prevents sitting on dying options |
+| **Theta decay** | Every passing hour, your option loses a little value | We trade near ATM (high delta) to minimize theta impact |
+| **API downtime** | If the exchange goes down, we can't close positions | 8-hour max hold + trailing stop provide safety nets |
+
+---
+
+## 🔧 HOW TO DEPLOY
+
+```bash
+# On your VPS (Ubuntu)
+cd ~/delta-trade
+git pull origin main
+rm -f bot_data/positions.json    # Clear old positions
+sudo systemctl restart trading-bot
+journalctl -u trading-bot -f     # Watch the wolf hunt
+```
+
+### .env Configuration
+```env
+DELTA_API_KEY=your_key_here
+DELTA_API_SECRET=your_secret_here
+DELTA_BASE_URL=https://cdn-ind.testnet.deltaex.org
+PAPER_TRADE=false
+LEVERAGE=50
+CAPITAL=200
+BASE_UNDERLYING=BTC
+```
+
+---
+
+## 📁 FILE MAP
+
+| File | What It Does |
+|------|-------------|
+| `options_bot.py` | The wolf itself — all logic, all decisions |
+| `.env` | Secret keys and config settings |
+| `blueprint1.md` | This document — the wolf's playbook |
+| `bot_data/positions.json` | Currently active trades |
+| `bot_data/trade_history.json` | Record of all past hunts |
+
+---
+
+*The wolf doesn't chase every rabbit. It waits for the elk. 🐺*
