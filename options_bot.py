@@ -419,8 +419,20 @@ class PatternDetector:
         lows=[float(c["low"]) for c in candles[-15:]]
         h_slope=(highs[-1]-highs[0])/len(highs)
         l_slope=(lows[-1]-lows[0])/len(lows)
+        last_close=float(candles[-1]["close"])
         if h_slope<0 and l_slope>0:
-            p.append({"name":"⚪ Symmetrical Triangle","bias":"neutral","score":0})
+            # Check breakout direction
+            upper_bound=highs[-1]; lower_bound=lows[-1]
+            if last_close > upper_bound:
+                p.append({"name":"🟢 Triangle Breakout UP","bias":"bullish","score":12})
+            elif last_close < lower_bound:
+                p.append({"name":"🔴 Triangle Breakout DOWN","bias":"bearish","score":-12})
+            else:
+                p.append({"name":"⚪ Symmetrical Triangle (pending breakout)","bias":"neutral","score":0})
+        elif h_slope<0 and l_slope<=0:  # Descending triangle
+            p.append({"name":"🔴 Descending Triangle","bias":"bearish","score":-8})
+        elif h_slope>=0 and l_slope>0:  # Ascending triangle
+            p.append({"name":"🟢 Ascending Triangle","bias":"bullish","score":8})
         return p
 
 # ══════════════════════════════════════════════════════════════
@@ -432,71 +444,210 @@ class SignalEngine:
         self.patterns = PatternDetector()
         self.daily_bias = "UNKNOWN"
         self.bias_last_updated = None
+        self.bias_date = None  # Track which date the bias is for
+        self.key_levels = {}   # Support & resistance levels
+        self.daily_report = [] # Full analysis report
+
+    def _find_key_levels(self, candles):
+        """Detect Support & Resistance levels from swing highs/lows."""
+        if len(candles) < 10: return [], []
+        highs = [float(c["high"]) for c in candles]
+        lows = [float(c["low"]) for c in candles]
+        supports = []; resistances = []
+        for i in range(2, len(highs)-2):
+            if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
+                resistances.append(highs[i])
+            if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
+                supports.append(lows[i])
+        # Deduplicate (cluster within 0.5%)
+        def cluster(levels):
+            if not levels: return []
+            levels.sort(); result = [levels[0]]
+            for l in levels[1:]:
+                if abs(l - result[-1]) / result[-1] > 0.005: result.append(l)
+            return result[-5:]  # Top 5
+        return cluster(supports), cluster(resistances)
+
+    def _deep_tf_analysis(self, candles, tf_label):
+        """Run FULL analysis on a timeframe: indicators + patterns + key levels + breakouts."""
+        if not candles or len(candles) < 5:
+            return {"direction": "NEUTRAL", "score": 50, "details": "no data"}
+
+        closes = [float(c["close"]) for c in candles]
+        score = 50; details = []
+
+        # RSI
+        rsi = self._rsi(closes)
+        if rsi < 30: score += 18; details.append(f"RSI {rsi:.0f} (oversold +18)")
+        elif rsi < 40: score += 10; details.append(f"RSI {rsi:.0f} (low +10)")
+        elif rsi > 70: score -= 18; details.append(f"RSI {rsi:.0f} (overbought -18)")
+        elif rsi > 60: score -= 10; details.append(f"RSI {rsi:.0f} (high -10)")
+        else: details.append(f"RSI {rsi:.0f}")
+
+        # EMA 9 vs 21
+        if len(closes) >= 21:
+            e9 = self._ema(closes, 9); e21 = self._ema(closes, 21)
+            if e9[-1] > e21[-1]: score += 12; details.append("EMA9>EMA21 (+12)")
+            else: score -= 12; details.append("EMA9<EMA21 (-12)")
+
+        # EMA 20 vs 50 (trend)
+        if len(closes) >= 50:
+            e20 = self._ema(closes, 20); e50 = self._ema(closes, 50)
+            if e20[-1] > e50[-1]: score += 8; details.append("EMA20>EMA50 (+8)")
+            else: score -= 8; details.append("EMA20<EMA50 (-8)")
+
+        # MACD
+        if len(closes) >= 26:
+            macd = [a-b for a,b in zip(self._ema(closes,12), self._ema(closes,26))]
+            sig = self._ema(macd, 9)
+            if macd[-1] > sig[-1]: score += 5; details.append("MACD bullish (+5)")
+            else: score -= 5; details.append("MACD bearish (-5)")
+
+        # Momentum (5-bar and 10-bar)
+        if len(closes) >= 10:
+            m5 = (closes[-1] - closes[-5]) / closes[-5] * 100
+            m10 = (closes[-1] - closes[-10]) / closes[-10] * 100
+            if m5 > 0: score += 3
+            else: score -= 3
+            details.append(f"Mom5: {m5:+.1f}% Mom10: {m10:+.1f}%")
+
+        # Full pattern scan
+        p_score, p_list, p_bias = self.patterns.analyze(candles)
+        score += p_score
+        pattern_names = [p["name"] for p in p_list]
+
+        # Key levels
+        supports, resistances = self._find_key_levels(candles)
+        current = closes[-1]
+        near_support = any(abs(current - s) / current < 0.01 for s in supports)
+        near_resistance = any(abs(current - r) / current < 0.01 for r in resistances)
+        if near_support: details.append("⚡ Near SUPPORT")
+        if near_resistance: details.append("⚡ Near RESISTANCE")
+
+        # Breakout checks from patterns
+        for p in p_list:
+            if "Breakout" in p["name"] or "Flag" in p["name"]:
+                details.append(f"💥 {p['name']}")
+
+        score = max(0, min(100, score))
+        direction = "BULLISH" if score >= 55 else "BEARISH" if score <= 45 else "NEUTRAL"
+
+        return {
+            "direction": direction, "score": score, "rsi": rsi,
+            "details": details, "patterns": pattern_names,
+            "supports": supports, "resistances": resistances,
+            "near_support": near_support, "near_resistance": near_resistance
+        }
 
     def update_daily_bias(self, symbol="BTCUSD"):
-        """LAYER 1: Macro bias from 1W + 1D candles."""
-        log.info("🌍 DAILY BIAS ASSESSMENT:")
+        """LAYER 1: Deep macro analysis from 1W + 1D (4 months of data).
+        Runs all patterns, indicators, key levels, breakouts.
+        Caches for the day. Resets at midnight UTC."""
+        today = datetime.now(pytz.UTC).date()
+
+        # Only refresh once per day (or first run)
+        if self.bias_date == today and self.daily_bias != "UNKNOWN":
+            return
+
+        log.info("")
+        log.info("╔══════════════════════════════════════════════════════════╗")
+        log.info("║     🌍 DEEP MACRO ANALYSIS — 4-Month Review              ║")
+        log.info("╚══════════════════════════════════════════════════════════╝")
+        self.daily_report = []
         bias_votes = []
 
-        for tf, label in [("1w", "Weekly"), ("1d", "Daily")]:
-            candles = self.api.get_candles(symbol, tf, 30)
+        for tf, label, candle_count in [("1w", "WEEKLY", 20), ("1d", "DAILY", 120)]:
+            candles = self.api.get_candles(symbol, tf, candle_count)
             if not candles:
-                log.info(f"    📅 {label} ({tf}): ⚪ No data")
+                log.info(f"    📅 {label}: ⚪ No data available")
                 continue
-            closes = [float(c["close"]) for c in candles]
-            rsi = self._rsi(closes)
-            direction = "neutral"
-            score = 50
 
-            if len(closes) >= 21:
-                e9 = self._ema(closes, 9); e21 = self._ema(closes, 21)
-                if e9[-1] > e21[-1]: score += 15
-                else: score -= 15
+            log.info(f"")
+            log.info(f"    ━━━ 📅 {label} ANALYSIS ({len(candles)} candles ≈ {label.lower()} history) ━━━")
+            result = self._deep_tf_analysis(candles, label)
 
-            if rsi < 40: score += 10
-            elif rsi > 60: score -= 10
+            emoji = "🟢" if result['direction']=="BULLISH" else "🔴" if result['direction']=="BEARISH" else "⚪"
+            log.info(f"    {emoji} Verdict: {result['direction']} | Score: {result['score']}/100")
 
-            if len(closes) >= 5:
-                ups = sum(1 for i in range(-5,0) if i+1<0 and closes[i]<closes[i+1])
-                if ups >= 3: score += 5
-                else: score -= 5
+            # Log indicators
+            for d in result['details']:
+                log.info(f"        • {d}")
 
-            direction = "BULLISH" if score >= 55 else "BEARISH" if score <= 45 else "NEUTRAL"
-            bias_votes.append(direction)
+            # Log patterns found
+            if result['patterns']:
+                log.info(f"        🕯️ Patterns ({len(result['patterns'])}):'")
+                for pn in result['patterns'][:6]:
+                    log.info(f"            {pn}")
 
-            emoji = "🟢" if direction=="BULLISH" else "🔴" if direction=="BEARISH" else "⚪"
-            trend = "↑" if direction=="BULLISH" else "↓" if direction=="BEARISH" else "→"
-            ema_s = "EMA9>EMA21" if score>=55 else "EMA9<EMA21" if score<=45 else "EMA flat"
-            log.info(f"    📅 {label:6s} ({tf}): {emoji} {direction:8s} | {ema_s} | RSI: {rsi:.0f} | Trend: {trend}")
+            # Log key levels
+            if result['supports']:
+                log.info(f"        🟢 Support levels: {', '.join(f'${s:,.0f}' for s in result['supports'])}")
+            if result['resistances']:
+                log.info(f"        🔴 Resistance levels: {', '.join(f'${r:,.0f}' for r in result['resistances'])}")
 
-        # Determine overall bias
-        if bias_votes.count("BULLISH") >= 1 and "BEARISH" not in bias_votes:
+            # Breakout alerts
+            if result.get('near_support'):
+                log.info(f"        ⚡ PRICE AT SUPPORT — Watch for bounce!")
+            if result.get('near_resistance'):
+                log.info(f"        ⚡ PRICE AT RESISTANCE — Watch for rejection!")
+
+            bias_votes.append(result['direction'])
+            self.daily_report.append({"tf": label, **result})
+            self.key_levels[label] = {"supports": result['supports'], "resistances": result['resistances']}
+
+        # ── FINAL BIAS DETERMINATION ──
+        log.info(f"")
+        log.info(f"    ━━━ 🏷️  FINAL BIAS DETERMINATION ━━━")
+        bull_count = bias_votes.count("BULLISH")
+        bear_count = bias_votes.count("BEARISH")
+
+        if bull_count >= 1 and bear_count == 0:
             self.daily_bias = "BULLISH"
-        elif bias_votes.count("BEARISH") >= 1 and "BULLISH" not in bias_votes:
+        elif bear_count >= 1 and bull_count == 0:
             self.daily_bias = "BEARISH"
-        elif "BULLISH" in bias_votes and "BEARISH" in bias_votes:
-            self.daily_bias = "CHOPPY"
         else:
             self.daily_bias = "CHOPPY"
 
         emoji = "🟢" if self.daily_bias=="BULLISH" else "🔴" if self.daily_bias=="BEARISH" else "🟡"
-        rule = "Only CALL options" if self.daily_bias=="BULLISH" else "Only PUT options" if self.daily_bias=="BEARISH" else "NO TRADING — conflicting signals"
-        log.info(f"    🏷️  TODAY'S BIAS: {emoji} {self.daily_bias}")
+
+        if self.daily_bias == "BULLISH":
+            rule = "Only CALL options. Ride the trend."
+        elif self.daily_bias == "BEARISH":
+            rule = "Only PUT options. Ride the trend."
+        else:
+            rule = "HEDGE MODE — Buy BOTH call + put to capture volatility."
+
+        log.info(f"    {emoji} TODAY'S BIAS: {self.daily_bias}")
         log.info(f"    📋 Rule: {rule}")
+
+        # Log any breakout patterns from macro TFs
+        for r in self.daily_report:
+            for pn in r.get('patterns', []):
+                if any(kw in pn for kw in ['Breakout', 'Flag', 'Triangle', 'Head', 'Double']):
+                    log.info(f"    💥 MACRO PATTERN: {pn} on {r['tf']}")
+
+        log.info(f"")
+        log.info(f"    ⏰ This analysis is locked until midnight UTC.")
+        log.info("╔══════════════════════════════════════════════════════════╗")
+        log.info(f"║  BIAS: {self.daily_bias:8s} | Next refresh: tomorrow 00:00 UTC    ║")
+        log.info("╚══════════════════════════════════════════════════════════╝")
+
+        self.bias_date = today
         self.bias_last_updated = datetime.now(pytz.UTC)
 
     def evaluate(self, symbol="BTCUSD"):
         """Full 4-layer evaluation. Returns (signal, score, method, bias, spot)."""
         spot = self.api.get_spot_price(symbol)
 
-        # Refresh bias every 4 hours
-        if not self.bias_last_updated or (datetime.now(pytz.UTC) - self.bias_last_updated).seconds > 14400:
+        # Refresh bias at midnight UTC (new day)
+        today = datetime.now(pytz.UTC).date()
+        if self.bias_date != today:
             self.update_daily_bias(symbol)
 
-        # LAYER 1 CHECK: No trade on choppy days
+        # LAYER 1 CHECK: Choppy = HEDGE mode (handled in _cycle)
         if self.daily_bias == "CHOPPY":
-            log.info("    🟡 Market is CHOPPY — no hunting today.")
-            return "NEUTRAL", 0, "choppy_bias", self.daily_bias, spot
+            log.info("    🟡 Market is CHOPPY — HEDGE MODE active.")
+            return "HEDGE", 50, "choppy_hedge", self.daily_bias, spot
 
         # LAYER 2: Higher TF confirmation (15m, 1h, 4h)
         log.info("    📊 HIGHER TF CONFIRMATION:")
@@ -583,8 +734,10 @@ class SignalEngine:
         # Direction must match daily bias
         if self.daily_bias == "BULLISH":
             sig = "BUY" if entry_score >= OPTIONS_MIN_SCORE else "NEUTRAL"
-        else:
+        elif self.daily_bias == "BEARISH":
             sig = "SELL" if (100-entry_score) >= OPTIONS_MIN_SCORE else "NEUTRAL"
+        else:
+            sig = "NEUTRAL"
 
         return sig, entry_score, "full_analysis", self.daily_bias, spot
 
@@ -664,16 +817,20 @@ class OptionsTradingBot:
             log.info(f"👁️  Monitoring {len(open_pos)} active position(s)...")
             for pos in open_pos: self._monitor(pos)
 
-        # Check daily trade limit
+        # Check daily trade limit (allow 2 on CHOPPY for hedging)
         today = datetime.now(pytz.UTC).date()
-        if self.last_trade_date == today:
-            log.info("🏆 Already made our kill today — resting until tomorrow.")
+        max_today = 2 if self.signals.daily_bias == "CHOPPY" else MAX_TRADES_PER_DAY
+        trades_today = len([p for p in self.positions if p.entry_time and p.entry_time[:10] == str(today)])
+        if trades_today >= max_today:
+            msg = "🏆 Hedge pair placed" if max_today == 2 else "🏆 Already made our kill today"
+            log.info(f"{msg} — monitoring only.")
             return
 
         # Check max positions
         active = len([p for p in self.positions if p.status == "open"])
-        if active >= MAX_POSITIONS:
-            log.info("🎒 Position active — monitoring only.")
+        max_pos = 2 if self.signals.daily_bias == "CHOPPY" else MAX_POSITIONS
+        if active >= max_pos:
+            log.info("🎒 Position(s) active — monitoring only.")
             return
 
         # Run 4-layer analysis
@@ -681,6 +838,12 @@ class OptionsTradingBot:
         sig, score, method, bias, spot = self.signals.evaluate()
 
         bar = "█" * int(score/5) + "░" * (20-int(score/5))
+        if sig == "HEDGE":
+            log.info(f"📡 Verdict: 🟡 HEDGE MODE | Bias: CHOPPY | BTC: ${spot:,.2f}")
+            log.info("    🛡️ Placing hedge — buying BOTH call + put to capture volatility")
+            self._execute_hedge(spot)
+            return
+
         d = "🟢 BULLISH" if sig=="BUY" else "🔴 BEARISH" if sig=="SELL" else "⚪ NEUTRAL"
         log.info(f"📡 Verdict: {d} | Score: [{bar}] {score:.0f}/100 | Bias: {bias} | BTC: ${spot:,.2f}")
 
@@ -725,18 +888,54 @@ class OptionsTradingBot:
         log.info(f"🔥 THIS IS THE ONE — {best['symbol']}")
         self._open(best, sig)
 
-    def _open(self, bc, sig):
+    def _execute_hedge(self, spot):
+        """CHOPPY MODE: Buy both a CALL and PUT to profit from volatility."""
+        chain = self.api.get_options_chain(BASE_UNDERLYING)
+        if not chain:
+            log.warning("🏜️  No contracts for hedge!"); return
+
+        target = spot * 1.005  # Near ATM
+
+        for opt_type in ["call", "put"]:
+            matching = [c for c in chain if c["type"] == opt_type and c["tradeable"]]
+            if not matching:
+                log.warning(f"    ⚠️  No tradeable {opt_type.upper()}s for hedge"); continue
+
+            # Score by Greeks + proximity
+            for c in matching:
+                gs = 0; d_abs = abs(c.get("delta", 0))
+                if 0.30 <= d_abs <= 0.50: gs += 20
+                elif 0.20 <= d_abs <= 0.60: gs += 10
+                if abs(c.get("gamma",0)) > 0.003: gs += 10
+                if c.get("theta",0) > -50: gs += 10
+                gs += max(0, 20 - (abs(c["strike"]-target)/spot)*100)
+                c["greek_score"] = gs
+
+            matching.sort(key=lambda x: x["greek_score"], reverse=True)
+            best = matching[0]
+
+            emoji = "📗" if opt_type == "call" else "📕"
+            log.info(f"    {emoji} HEDGE LEG: {opt_type.upper()} — {best['symbol']}")
+            log.info(f"       Δ={best.get('delta',0):+.4f} Θ={best.get('theta',0):.2f} | Strike: ${best['strike']:,.0f}")
+
+            # Half wallet per leg
+            self._open(best, "BUY", wallet_fraction=0.5)
+
+        log.info("    🛡️ Hedge pair placed — profiting from volatility either direction!")
+
+    def _open(self, bc, sig, wallet_fraction=1.0):
         # Refresh wallet for full sizing
         wallet = self.api.get_wallet_balance()
         available = wallet.get("available", self.wallet_balance) if wallet.get("available", 0) > 0 else self.wallet_balance
 
         self.api.set_leverage(bc["product_id"], LEVERAGE)
 
-        notional = available * LEVERAGE
+        notional = available * wallet_fraction * LEVERAGE
         ep = bc["ask"] if bc["ask"] > 0 else bc["mark_price"]
         qty = max(1, int(notional / max(ep, 0.01)))
 
-        log.info(f"    💰 Wallet: ${available:,.2f} | Notional ({LEVERAGE}x): ${notional:,.2f}")
+        frac_label = f" ({wallet_fraction*100:.0f}% of wallet)" if wallet_fraction < 1.0 else ""
+        log.info(f"    💰 Wallet: ${available:,.2f} | Allocation: ${available*wallet_fraction:,.2f}{frac_label} | Notional ({LEVERAGE}x): ${notional:,.2f}")
         log.info(f"    💰 Buying {qty}x @ ${ep:.4f}")
         log.info(f"    📤 {'PAPER' if PAPER_TRADE else 'LIVE'} order...")
 
