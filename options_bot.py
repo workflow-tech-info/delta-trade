@@ -31,7 +31,7 @@ PAPER_TRADE    = True if FORCE_PAPER_TRADE else os.getenv("PAPER_TRADE", "true")
 
 # v5.0 — One Kill a Day settings
 OPTIONS_MIN_SCORE = 70            # High bar for blockbuster entries
-LEVERAGE          = int(os.getenv("LEVERAGE", "50"))
+LEVERAGE          = int(os.getenv("LEVERAGE", "20"))  # Delta max for options = 20x
 OPTIONS_RISK_PCT  = 1.0           # 100% of wallet
 MAX_POSITIONS     = 1
 MAX_TRADES_PER_DAY = 1            # One kill a day
@@ -133,23 +133,40 @@ class DeltaAPI:
         except: pass
         return {"available": 0}
 
-    def set_leverage(self, product_id, leverage=50):
+    def set_leverage(self, product_id, leverage=20):
+        """Set leverage, auto-retry with exchange max if rejected."""
         if PAPER_TRADE:
             log.info(f"    📝 PAPER: Leverage set to {leverage}x")
-            return {"success": True, "result": {"leverage": leverage}}
+            return {"success": True, "result": {"leverage": leverage}, "actual_leverage": leverage}
         try:
             path = f"/v2/products/{product_id}/orders/leverage"
             body = json.dumps({"leverage": leverage})
             headers = self._sign("POST", path, "", body)
             r = self.session.post(f"{BASE_URL}{path}", data=body, headers=headers, timeout=10).json()
             if r.get("success"):
-                log.info(f"    ⚙️  Leverage confirmed: {r['result'].get('leverage', leverage)}x")
+                actual = float(r['result'].get('leverage', leverage))
+                log.info(f"    ⚙️  Leverage confirmed: {actual}x")
+                r["actual_leverage"] = actual
+                return r
             else:
-                log.warning(f"    ⚠️  Leverage response: {r}")
-            return r
+                # Auto-retry with max leverage if exceeded
+                err = r.get("error", {})
+                if err.get("code") == "max_leverage_exceeded":
+                    max_lev = float(err.get("context", {}).get("max_leverage", 1))
+                    log.warning(f"    ⚠️  {leverage}x exceeds max. Retrying with {max_lev}x...")
+                    body2 = json.dumps({"leverage": max_lev})
+                    headers2 = self._sign("POST", path, "", body2)
+                    r2 = self.session.post(f"{BASE_URL}{path}", data=body2, headers=headers2, timeout=10).json()
+                    if r2.get("success"):
+                        log.info(f"    ⚙️  Leverage confirmed: {max_lev}x (exchange max)")
+                        r2["actual_leverage"] = max_lev
+                        return r2
+                log.warning(f"    ⚠️  Leverage failed: {r}")
+                r["actual_leverage"] = 1
+                return r
         except Exception as e:
             log.warning(f"    ⚠️  Leverage error: {e}")
-            return {}
+            return {"actual_leverage": 1}
 
     def get_options_chain(self, underlying="BTC") -> list:
         try:
@@ -1012,19 +1029,20 @@ class OptionsTradingBot:
         wallet = self.api.get_wallet_balance()
         available = wallet.get("available", self.wallet_balance) if wallet.get("available", 0) > 0 else self.wallet_balance
 
-        self.api.set_leverage(bc["product_id"], LEVERAGE)
+        lev_result = self.api.set_leverage(bc["product_id"], LEVERAGE)
+        actual_leverage = lev_result.get("actual_leverage", LEVERAGE)
 
         # Delta Exchange: each option lot = 0.001 BTC
         # Premium is quoted per 1 BTC, so cost_per_lot = premium × 0.001
         LOT_SIZE = 0.001  # 0.001 BTC per contract on Delta Exchange
-        notional = available * wallet_fraction * LEVERAGE
+        notional = available * wallet_fraction * actual_leverage
         ep = bc["ask"] if bc["ask"] > 0 else bc["mark_price"]
         cost_per_lot = ep * LOT_SIZE  # Actual USD cost per lot
         qty = max(1, int(notional / max(cost_per_lot, 0.01)))
 
         frac_label = f" ({wallet_fraction*100:.0f}% of wallet)" if wallet_fraction < 1.0 else ""
         log.info(f"    💰 Wallet: ${available:,.2f} | Allocation: ${available*wallet_fraction:,.2f}{frac_label}")
-        log.info(f"    💰 Notional ({LEVERAGE}x): ${notional:,.2f}")
+        log.info(f"    💰 Notional ({actual_leverage}x leverage): ${notional:,.2f}")
         log.info(f"    💰 Premium: ${ep:.2f}/BTC | Cost/lot: ${cost_per_lot:.4f} | Qty: {qty} lots")
         log.info(f"    💰 Buying {qty}x @ ${ep:.4f}")
         log.info(f"    📤 {'PAPER' if PAPER_TRADE else 'LIVE'} order...")
