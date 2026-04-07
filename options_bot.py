@@ -1,128 +1,76 @@
 """
 ╔══════════════════════════════════════════════════════════════════════╗
-║          DELTA EXCHANGE — CRYPTO OPTIONS BOT v4.0                   ║
-║          Multi-Timeframe · Greeks · Pattern Detection · Trailing Stop ║
+║          DELTA EXCHANGE — CRYPTO OPTIONS BOT v5.0                   ║
+║          "One Kill a Day" — Full Conviction Day Trading Engine       ║
 ║                                                                      ║
-║  Features:                                                           ║
-║  • Option Greeks analysis (Δ, Γ, Θ, V, IV) for contract selection   ║
-║  • Multi-timeframe confirmation (5m, 10m, 15m, 1h)                  ║
-║  • Candlestick pattern detection (Engulfing, Hammer, Doji, etc.)    ║
-║  • Chart pattern detection (Double Top/Bottom, Flags, Wedges)       ║
-║  • Dynamic trailing stop loss (50% from peak, no profit ceiling)    ║
-║  • 50x leverage via API                                              ║
-║  • Max 1 active position at a time                                   ║
-║  • Hunter-style logging for easy debugging                           ║
+║  4-Layer Decision System:                                            ║
+║  L1: Daily Bias (1W + 1D) → BULLISH / BEARISH / CHOPPY             ║
+║  L2: Higher TF Confirmation (4h, 1h, 15m)                          ║
+║  L3: Entry Trigger (5m) — 27 patterns + indicators                  ║
+║  L4: Full Wallet Execution — 100% × 50x leverage                   ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
 
-# ── IMPORTS ──
-import requests, numpy as np, math, time, json, logging, os, hmac, hashlib, pytz
+import requests, numpy as np, time, json, logging, os, hmac, hashlib, pytz
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, asdict
+from typing import List, Any
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Load secrets from .env file
 load_dotenv()
 
 # ══════════════════════════════════════════════════════════════
-# CONFIGURATION — All tuneable settings in one place
+# CONFIGURATION
 # ══════════════════════════════════════════════════════════════
-
-# API credentials from .env
 API_KEY        = os.getenv("DELTA_API_KEY", "")
 API_SECRET     = os.getenv("DELTA_API_SECRET", "")
 BASE_URL       = os.getenv("DELTA_BASE_URL", "https://cdn-ind.testnet.deltaex.org")
-TG_TOKEN       = os.getenv("TG_TOKEN", "")
-TG_CHAT_ID     = os.getenv("TG_CHAT_ID", "")
-
-# Paper trading toggle — set FORCE_PAPER_TRADE=True to simulate without API
 FORCE_PAPER_TRADE = False
-PAPER_TRADE       = True if FORCE_PAPER_TRADE else os.getenv("PAPER_TRADE", "true").lower() == "true"
+PAPER_TRADE    = True if FORCE_PAPER_TRADE else os.getenv("PAPER_TRADE", "true").lower() == "true"
 
-# ── TRADING PARAMETERS ──
-# The minimum score (0-100) needed to trigger a trade entry.
-# Higher = fewer but higher quality trades. 55 is a good balanced default.
-OPTIONS_MIN_SCORE = 55
-
-# Leverage to set via the Delta API before each trade.
-# Options have natural leverage (~70x), this controls margin allocation.
+# v5.0 — One Kill a Day settings
+OPTIONS_MIN_SCORE = 70            # High bar for blockbuster entries
 LEVERAGE          = int(os.getenv("LEVERAGE", "50"))
-
-# Risk per trade: % of total capital allocated per trade.
-# 0.5% is conservative. Increase to 1-2% for more aggressive sizing.
-OPTIONS_RISK_PCT  = 0.005
-
-# Maximum number of positions held at the same time. 
-# Set to 1 = one trade at a time, full focus.
+OPTIONS_RISK_PCT  = 1.0           # 100% of wallet
 MAX_POSITIONS     = 1
-
-# Trailing stop: when price rises, the stop follows.
-# 0.50 = exit if price drops 50% from the highest point reached.
+MAX_TRADES_PER_DAY = 1            # One kill a day
 TRAILING_STOP_PCT = 0.50
-
-# How often the bot runs a cycle (in seconds). 600 = 10 minutes.
-CYCLE_INTERVAL    = 600
-
-# The underlying asset we are trading options on.
+CYCLE_INTERVAL    = 120           # 2 minutes for 5m precision
 BASE_UNDERLYING   = os.getenv("BASE_UNDERLYING", "BTC")
+MAX_HOLD_HOURS    = 8             # Day trading
 
-# Close positions 30 minutes before option expiry
-CLOSE_BEFORE_EXPIRY_MINS = 30
+# Timeframes
+PRIMARY_TIMEFRAME  = "5m"
+CONFIRM_TIMEFRAMES = ["15m", "1h", "4h"]
+MACRO_TIMEFRAMES   = ["1d", "1w"]
+CANDLE_LIMIT       = 50
 
-# Maximum hours to hold any position (safety limit)
-MAX_HOLD_HOURS    = 12
-
-# ── MULTI-TIMEFRAME SETTINGS ──
-# Primary timeframe for signal generation (10m not supported by API, using 15m)
-PRIMARY_TIMEFRAME = "15m"
-# Confirmation timeframes — at least 3 of 4 must agree
-CONFIRM_TIMEFRAMES = ["5m", "15m", "30m", "1h"]
-# Number of candles to fetch per timeframe
-CANDLE_LIMIT = 30
-
-# ── DATA STORAGE ──
+# Storage
 DATA_DIR = Path(os.getenv("BOT_DATA_DIR", "./bot_data"))
 DATA_DIR.mkdir(exist_ok=True)
 POSITIONS_FILE     = DATA_DIR / "positions.json"
 TRADE_HISTORY_FILE = DATA_DIR / "trade_history.json"
-PERFORMANCE_FILE   = DATA_DIR / "performance_report.json"
 
-# ── LOGGING SETUP ──
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.FileHandler("options_bot_log.txt", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[logging.FileHandler("options_bot_log.txt", encoding="utf-8"), logging.StreamHandler()])
 log = logging.getLogger(__name__)
 
-# ══════════════════════════════════════════════════════════════
-# DATA CLASSES & PERSISTENCE
-# ══════════════════════════════════════════════════════════════
-
-def _save_json(filepath: Path, data):
-    """Save data to a JSON file. Silently ignores errors."""
+def _save_json(fp, data):
     try:
-        with open(filepath, "w") as f:
-            json.dump(data, f, indent=2, default=str)
+        with open(fp, "w") as f: json.dump(data, f, indent=2, default=str)
     except: pass
 
-def _load_json(filepath: Path, default=None):
-    """Load data from a JSON file. Returns default if file doesn't exist."""
+def _load_json(fp, default=None):
     if default is None: default = []
     try:
-        if filepath.exists():
-            with open(filepath, "r") as f: return json.load(f)
+        if fp.exists():
+            with open(fp, "r") as f: return json.load(f)
     except: pass
     return default
 
 @dataclass
 class OptionContract:
-    """Blueprint for an options contract's details."""
     symbol: str; underlying: str; expiry: str; strike: float
     option_type: str; premium: float; delta: float; implied_vol: float
     open_interest: int; bid: float; ask: float; spread_pct: float
@@ -130,34 +78,29 @@ class OptionContract:
 
 @dataclass
 class OptionsPosition:
-    """Blueprint for an active or closed trade position."""
-    contract: Any  # OptionContract or dict (flexible for JSON loading)
-    side: str; quantity: int
+    contract: Any; side: str; quantity: int
     entry_premium: float; entry_time: str
     stop_premium: float; target_premium: float
     order_id: str = ""; exit_premium: float = 0.0
     exit_reason: str = ""; pnl: float = 0.0
     status: str = "open"; leverage: int = LEVERAGE
-    peak_premium: float = 0.0  # Tracks highest price for trailing stop
+    peak_premium: float = 0.0
 
 # ══════════════════════════════════════════════════════════════
 # DELTA API HANDLER
-# Handles all communication with the Delta Exchange servers.
 # ══════════════════════════════════════════════════════════════
 class DeltaAPI:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({"Content-Type": "application/json", "User-Agent": "bot-v4.0"})
+        self.session.headers.update({"Content-Type": "application/json", "User-Agent": "bot-v5.0"})
 
     def _sign(self, method, path, query_string="", payload=""):
-        """Create cryptographic signature for authenticated API calls."""
         ts = str(int(time.time()))
         message = method + ts + path + query_string + payload
         sig = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
         return {"api-key": API_KEY, "timestamp": ts, "signature": sig, "Content-Type": "application/json"}
 
     def get_spot_price(self, symbol="BTCUSD") -> float:
-        """Fetch current BTC spot price."""
         try:
             r = self.session.get(f"{BASE_URL}/v2/tickers/{symbol}", timeout=10).json()
             if r.get("success"):
@@ -165,28 +108,19 @@ class DeltaAPI:
         except: pass
         return 0.0
 
-    def get_candles(self, symbol="BTCUSD", resolution="15m", limit=30) -> list:
-        """Fetch OHLCV candle data for a given timeframe."""
+    def get_candles(self, symbol="BTCUSD", resolution="5m", limit=50) -> list:
         try:
             end = int(time.time())
-            
-            # Convert resolution string to seconds
-            res_sec = 60
-            if resolution.endswith('m'): res_sec = int(resolution[:-1]) * 60
-            elif resolution.endswith('h'): res_sec = int(resolution[:-1]) * 3600
-            elif resolution.endswith('d'): res_sec = int(resolution[:-1]) * 86400
-            
-            start = end - (res_sec * limit)
-            
-            r = self.session.get(f"{BASE_URL}/v2/history/candles", 
-                                 params={"resolution": resolution, "symbol": symbol, "start": start, "end": end},
-                                 timeout=10).json()
+            res_map = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
+            unit = resolution[-1]; val = int(resolution[:-1])
+            start = end - (val * res_map.get(unit, 60) * limit)
+            r = self.session.get(f"{BASE_URL}/v2/history/candles",
+                params={"resolution": resolution, "symbol": symbol, "start": start, "end": end}, timeout=10).json()
             if r.get("success"): return r.get("result", [])
         except: pass
         return []
 
     def get_wallet_balance(self) -> dict:
-        """Fetch wallet balance from the exchange."""
         if not API_KEY: return {"available": 0}
         try:
             path = "/v2/wallet/balances"
@@ -200,12 +134,8 @@ class DeltaAPI:
         return {"available": 0}
 
     def set_leverage(self, product_id, leverage=50):
-        """Set leverage for a product via the Delta API.
-        Endpoint: POST /v2/products/{product_id}/orders/leverage
-        Body: {"leverage": 50}
-        """
         if PAPER_TRADE:
-            log.info(f"    📝 PAPER: Leverage set to {leverage}x for product {product_id}")
+            log.info(f"    📝 PAPER: Leverage set to {leverage}x")
             return {"success": True, "result": {"leverage": leverage}}
         try:
             path = f"/v2/products/{product_id}/orders/leverage"
@@ -213,66 +143,41 @@ class DeltaAPI:
             headers = self._sign("POST", path, "", body)
             r = self.session.post(f"{BASE_URL}{path}", data=body, headers=headers, timeout=10).json()
             if r.get("success"):
-                log.info(f"    ⚙️  Leverage confirmed: {r['result'].get('leverage', leverage)}x | Margin: ${r['result'].get('order_margin', '?')}")
+                log.info(f"    ⚙️  Leverage confirmed: {r['result'].get('leverage', leverage)}x")
             else:
-                log.warning(f"    ⚠️  Leverage API response: {r}")
+                log.warning(f"    ⚠️  Leverage response: {r}")
             return r
         except Exception as e:
-            log.warning(f"    ⚠️  Leverage API error: {e}")
+            log.warning(f"    ⚠️  Leverage error: {e}")
             return {}
 
     def get_options_chain(self, underlying="BTC") -> list:
-        """Fetch all available options contracts from the exchange."""
         try:
-            log.info(f"    📡 Fetching options chain for {underlying}...")
-            r = self.session.get(f"{BASE_URL}/v2/tickers", 
-                                 params={"contract_types": "call_options,put_options", "underlying_asset_symbols": underlying},
-                                 timeout=10).json()
-            
+            r = self.session.get(f"{BASE_URL}/v2/tickers",
+                params={"contract_types": "call_options,put_options", "underlying_asset_symbols": underlying}, timeout=10).json()
             if r.get("success") and r.get("result"):
                 options = []
                 for t in r.get("result", []):
                     try:
-                        q = t.get("quotes") or {}
-                        g = t.get("greeks") or {}
-                        bid = float(q.get("best_bid") or 0)
-                        ask = float(q.get("best_ask") or 0)
-                        strike = float(t.get("strike_price") or 0)
-                        mark = float(t.get("mark_price") or 0)
+                        q = t.get("quotes") or {}; g = t.get("greeks") or {}
+                        bid = float(q.get("best_bid") or 0); ask = float(q.get("best_ask") or 0)
+                        strike = float(t.get("strike_price") or 0); mark = float(t.get("mark_price") or 0)
                         spread_pct = (ask-bid)/ask if ask > 0 else 1.0
-                        tradeable = bid > 0 and spread_pct < 0.20
-                        
-                        # ── PARSE GREEKS ──
-                        delta = float(g.get("delta") or 0)
-                        gamma = float(g.get("gamma") or 0)
-                        theta = float(g.get("theta") or 0)
-                        vega  = float(g.get("vega") or 0)
-                        rho   = float(g.get("rho") or 0)
-                        iv    = float(t.get("mark_vol") or 0)  # Implied volatility
-                        
                         options.append({
                             "symbol": t.get("symbol"), "product_id": t.get("product_id"),
-                            "strike": strike,
-                            "type": "call" if "call" in t.get("contract_type", "") else "put",
-                            "mark_price": mark, "bid": bid, "ask": ask,
-                            "spread_pct": spread_pct, "tradeable": tradeable,
-                            # Greeks — the prey's vital stats
-                            "delta": delta, "gamma": gamma, "theta": theta,
-                            "vega": vega, "rho": rho, "iv": iv
+                            "strike": strike, "type": "call" if "call" in t.get("contract_type","") else "put",
+                            "mark_price": mark, "bid": bid, "ask": ask, "spread_pct": spread_pct,
+                            "tradeable": bid > 0 and spread_pct < 0.20,
+                            "delta": float(g.get("delta") or 0), "gamma": float(g.get("gamma") or 0),
+                            "theta": float(g.get("theta") or 0), "vega": float(g.get("vega") or 0),
+                            "iv": float(t.get("mark_vol") or 0)
                         })
-                    except:
-                        continue
-                log.info(f"    ✅ Parsed {len(options)} options (with Greeks) from {len(r.get('result',[]))} raw contracts")
+                    except: continue
                 return options
-            
-            log.warning("    🏜️  No options contracts found on this exchange")
-            return []
-        except Exception as e:
-            log.error(f"    💥 API error in get_options_chain: {e}")
-            return []
+        except: pass
+        return []
 
     def place_order(self, product_id, side, size, symbol=""):
-        """Place a market order on the exchange."""
         if PAPER_TRADE:
             log.info(f"    📝 PAPER: {side.upper()} {size}x {symbol}")
             return {"success": True, "result": {"id": f"paper_{int(time.time())}"}}
@@ -283,786 +188,642 @@ class DeltaAPI:
             r = self.session.post(f"{BASE_URL}{path}", data=body, headers=headers, timeout=10).json()
             return r
         except Exception as e:
-            log.error(f"    💥 Order API error: {e}")
+            log.error(f"    💥 Order error: {e}")
             return {}
 
     def get_option_premium(self, symbol):
-        """Get the current mark price of a specific option contract."""
         try:
             r = self.session.get(f"{BASE_URL}/v2/tickers/{symbol}", timeout=10).json()
-            if not r.get("success"): return {}
-            res = r.get("result", {})
-            return {"mark_price": float(res.get("mark_price") or 0)}
-        except: return {}
-
+            if r.get("success"): return {"mark_price": float(r["result"].get("mark_price") or 0)}
+        except: pass
+        return {}
 
 # ══════════════════════════════════════════════════════════════
-# CANDLESTICK PATTERN DETECTOR
-# Analyzes OHLCV data to detect bullish/bearish patterns.
-# Each pattern returns a score modifier.
+# PATTERN DETECTOR — 27 Patterns (22 Candlestick + 5 Chart)
 # ══════════════════════════════════════════════════════════════
 class PatternDetector:
-    """Detects candlestick and chart patterns from OHLCV candle data.
-    
-    Returns a list of detected patterns with their bias (bullish/bearish)
-    and a combined score modifier (+/- points).
-    """
-    
     def analyze(self, candles):
-        """Main analysis function. Takes list of OHLCV candles.
-        Returns: (score_modifier, patterns_found_list, bias_string)
-        
-        Each candle expected format: {"open": X, "high": X, "low": X, "close": X}
-        """
-        if not candles or len(candles) < 5:
-            return 0, [], "insufficient_data"
-        
-        patterns = []
-        
-        # ── CANDLESTICK PATTERNS (last 3 candles) ──
-        patterns += self._detect_engulfing(candles)
-        patterns += self._detect_hammer(candles)
-        patterns += self._detect_doji(candles)
-        patterns += self._detect_morning_evening_star(candles)
-        patterns += self._detect_three_soldiers_crows(candles)
-        patterns += self._detect_harami(candles)
-        
-        # ── CHART PATTERNS (need more candles) ──
-        if len(candles) >= 15:
-            patterns += self._detect_double_top_bottom(candles)
-        if len(candles) >= 10:
-            patterns += self._detect_flag(candles)
-        
-        # Calculate combined score
-        total_score = sum(p["score"] for p in patterns)
-        
-        # Determine overall bias
-        bullish_count = sum(1 for p in patterns if p["bias"] == "bullish")
-        bearish_count = sum(1 for p in patterns if p["bias"] == "bearish")
-        
-        if bullish_count > bearish_count:
-            bias = "bullish"
-        elif bearish_count > bullish_count:
-            bias = "bearish"
-        else:
-            bias = "neutral"
-        
-        return total_score, patterns, bias
-    
-    def _body(self, c):
-        """Returns the absolute body size of a candle."""
-        return abs(float(c["close"]) - float(c["open"]))
-    
-    def _upper_wick(self, c):
-        """Returns the upper shadow/wick length."""
-        return float(c["high"]) - max(float(c["open"]), float(c["close"]))
-    
-    def _lower_wick(self, c):
-        """Returns the lower shadow/wick length."""
-        return min(float(c["open"]), float(c["close"])) - float(c["low"])
-    
-    def _is_bullish(self, c):
-        """Is this candle green/bullish (close > open)?"""
-        return float(c["close"]) > float(c["open"])
-    
-    def _range(self, c):
-        """Total range of a candle (high - low)."""
-        return float(c["high"]) - float(c["low"])
-    
-    # ── ENGULFING PATTERN ──
-    # Bullish: Small red candle followed by large green candle that engulfs it
-    # Bearish: Small green candle followed by large red candle that engulfs it
-    def _detect_engulfing(self, candles):
-        patterns = []
-        c1, c2 = candles[-2], candles[-1]  # Previous and current candle
-        
-        # Bullish Engulfing
-        if (not self._is_bullish(c1) and self._is_bullish(c2) and
-            float(c2["close"]) > float(c1["open"]) and float(c2["open"]) < float(c1["close"])):
-            patterns.append({"name": "🟢 Bullish Engulfing", "bias": "bullish", "score": 10})
-        
-        # Bearish Engulfing
-        if (self._is_bullish(c1) and not self._is_bullish(c2) and
-            float(c2["close"]) < float(c1["open"]) and float(c2["open"]) > float(c1["close"])):
-            patterns.append({"name": "🔴 Bearish Engulfing", "bias": "bearish", "score": -10})
-        
-        return patterns
-    
-    # ── HAMMER / HANGING MAN ──
-    # Hammer (bullish): Small body at top, long lower wick (2x+ body), after downtrend
-    # Hanging Man (bearish): Same shape but after uptrend
-    def _detect_hammer(self, candles):
-        patterns = []
-        c = candles[-1]
-        body = self._body(c)
-        lower = self._lower_wick(c)
-        upper = self._upper_wick(c)
-        rng = self._range(c)
-        
-        if rng == 0 or body == 0: return patterns
-        
-        # Hammer shape: long lower wick, small upper wick
-        if lower >= body * 2 and upper < body * 0.5:
-            # Check trend: are last 5 candles trending down? (hammer = bullish reversal)
-            closes = [float(x["close"]) for x in candles[-6:-1]]
-            if len(closes) >= 4 and closes[-1] < closes[0]:
-                patterns.append({"name": "🟢 Hammer", "bias": "bullish", "score": 8})
-            else:
-                patterns.append({"name": "🔴 Hanging Man", "bias": "bearish", "score": -5})
-        
-        # Inverted hammer / shooting star: long upper wick, small lower wick
-        if upper >= body * 2 and lower < body * 0.5:
-            closes = [float(x["close"]) for x in candles[-6:-1]]
-            if len(closes) >= 4 and closes[-1] < closes[0]:
-                patterns.append({"name": "🟢 Inverted Hammer", "bias": "bullish", "score": 6})
-            else:
-                patterns.append({"name": "🔴 Shooting Star", "bias": "bearish", "score": -8})
-        
-        return patterns
-    
-    # ── DOJI ──
-    # Body is very tiny compared to range. Signals indecision.
-    def _detect_doji(self, candles):
-        patterns = []
-        c = candles[-1]
-        body = self._body(c)
-        rng = self._range(c)
-        
-        if rng == 0: return patterns
-        
-        # Doji: body < 10% of total range
-        if body / rng < 0.10:
-            upper = self._upper_wick(c)
-            lower = self._lower_wick(c)
-            
-            if lower > upper * 2:
-                patterns.append({"name": "🟢 Dragonfly Doji", "bias": "bullish", "score": 5})
-            elif upper > lower * 2:
-                patterns.append({"name": "🔴 Gravestone Doji", "bias": "bearish", "score": -5})
-            else:
-                patterns.append({"name": "⚪ Doji (Indecision)", "bias": "neutral", "score": 0})
-        
-        return patterns
-    
-    # ── MORNING STAR / EVENING STAR ──
-    # 3-candle reversal patterns
-    def _detect_morning_evening_star(self, candles):
-        patterns = []
-        if len(candles) < 3: return patterns
-        
-        c1, c2, c3 = candles[-3], candles[-2], candles[-1]
-        body1, body2, body3 = self._body(c1), self._body(c2), self._body(c3)
-        
-        if body1 == 0: return patterns
-        
-        # Morning Star (bullish): Big red → Small body → Big green
-        if (not self._is_bullish(c1) and body2 < body1 * 0.3 and 
-            self._is_bullish(c3) and body3 > body1 * 0.5):
-            patterns.append({"name": "🟢 Morning Star", "bias": "bullish", "score": 12})
-        
-        # Evening Star (bearish): Big green → Small body → Big red
-        if (self._is_bullish(c1) and body2 < body1 * 0.3 and 
-            not self._is_bullish(c3) and body3 > body1 * 0.5):
-            patterns.append({"name": "🔴 Evening Star", "bias": "bearish", "score": -12})
-        
-        return patterns
-    
-    # ── THREE WHITE SOLDIERS / THREE BLACK CROWS ──
-    # Three consecutive strong candles in the same direction
-    def _detect_three_soldiers_crows(self, candles):
-        patterns = []
-        if len(candles) < 3: return patterns
-        
-        last3 = candles[-3:]
-        
-        # Three White Soldiers: 3 consecutive green candles, each closing higher
-        if all(self._is_bullish(c) for c in last3):
-            if (float(last3[1]["close"]) > float(last3[0]["close"]) and 
-                float(last3[2]["close"]) > float(last3[1]["close"])):
-                patterns.append({"name": "🟢 Three White Soldiers", "bias": "bullish", "score": 12})
-        
-        # Three Black Crows: 3 consecutive red candles, each closing lower
-        if all(not self._is_bullish(c) for c in last3):
-            if (float(last3[1]["close"]) < float(last3[0]["close"]) and 
-                float(last3[2]["close"]) < float(last3[1]["close"])):
-                patterns.append({"name": "🔴 Three Black Crows", "bias": "bearish", "score": -12})
-        
-        return patterns
-    
-    # ── HARAMI (inside bar) ──
-    # Current candle body is completely within previous candle body
-    def _detect_harami(self, candles):
-        patterns = []
-        c1, c2 = candles[-2], candles[-1]
-        
-        o1, c1c = float(c1["open"]), float(c1["close"])
-        o2, c2c = float(c2["open"]), float(c2["close"])
-        
-        high1, low1 = max(o1, c1c), min(o1, c1c)
-        high2, low2 = max(o2, c2c), min(o2, c2c)
-        
-        # Current candle completely inside previous
-        if high2 < high1 and low2 > low1:
-            if not self._is_bullish(c1) and self._is_bullish(c2):
-                patterns.append({"name": "🟢 Bullish Harami", "bias": "bullish", "score": 6})
-            elif self._is_bullish(c1) and not self._is_bullish(c2):
-                patterns.append({"name": "🔴 Bearish Harami", "bias": "bearish", "score": -6})
-        
-        return patterns
-    
-    # ── DOUBLE TOP / DOUBLE BOTTOM ──
-    # Two peaks/troughs at roughly the same level
-    def _detect_double_top_bottom(self, candles):
-        patterns = []
-        highs = [float(c["high"]) for c in candles[-15:]]
-        lows = [float(c["low"]) for c in candles[-15:]]
-        
-        if not highs or not lows: return patterns
-        
-        # Find two highest peaks
-        h_sorted = sorted(enumerate(highs), key=lambda x: x[1], reverse=True)
-        if len(h_sorted) >= 2:
-            idx1, val1 = h_sorted[0]
-            idx2, val2 = h_sorted[1]
-            # Peaks must be at least 3 candles apart and within 1% of each other
-            if abs(idx1 - idx2) >= 3 and abs(val1 - val2) / val1 < 0.01:
-                # Current price near or below the valley between peaks = bearish
-                patterns.append({"name": "🔴 Double Top", "bias": "bearish", "score": -10})
-        
-        # Find two lowest troughs
-        l_sorted = sorted(enumerate(lows), key=lambda x: x[1])
-        if len(l_sorted) >= 2:
-            idx1, val1 = l_sorted[0]
-            idx2, val2 = l_sorted[1]
-            if abs(idx1 - idx2) >= 3 and abs(val1 - val2) / val1 < 0.01:
-                patterns.append({"name": "🟢 Double Bottom", "bias": "bullish", "score": 10})
-        
-        return patterns
-    
-    # ── BULL/BEAR FLAG ──
-    # Strong move followed by tight consolidation
-    def _detect_flag(self, candles):
-        patterns = []
-        if len(candles) < 10: return patterns
-        
-        # Look at last 10 candles: first 5 = "pole", last 5 = "flag"
-        pole = candles[-10:-5]
-        flag = candles[-5:]
-        
-        pole_move = float(pole[-1]["close"]) - float(pole[0]["open"])
-        flag_range = max(float(c["high"]) for c in flag) - min(float(c["low"]) for c in flag)
-        pole_range = abs(pole_move)
-        
-        if pole_range == 0: return patterns
-        
-        # Flag should be tight (< 40% of pole range) = consolidation after move
-        if flag_range < pole_range * 0.4:
-            if pole_move > 0:
-                patterns.append({"name": "🟢 Bullish Flag", "bias": "bullish", "score": 8})
-            else:
-                patterns.append({"name": "🔴 Bearish Flag", "bias": "bearish", "score": -8})
-        
-        return patterns
+        if not candles or len(candles) < 5: return 0, [], "insufficient_data"
+        p = []
+        # Single candle
+        p += self._doji(candles); p += self._marubozu(candles)
+        p += self._hammer(candles); p += self._spinning_top(candles); p += self._belt_hold(candles)
+        # 2-candle
+        p += self._engulfing(candles); p += self._harami(candles)
+        p += self._piercing_dark_cloud(candles); p += self._tweezer(candles)
+        # 3-candle
+        p += self._morning_evening_star(candles); p += self._three_soldiers_crows(candles)
+        p += self._three_inside(candles); p += self._abandoned_baby(candles)
+        # Chart patterns (need more data)
+        if len(candles) >= 15: p += self._double_top_bottom(candles)
+        if len(candles) >= 10: p += self._flag(candles)
+        if len(candles) >= 20: p += self._head_shoulders(candles)
+        if len(candles) >= 15: p += self._triangle(candles)
 
+        total = sum(x["score"] for x in p)
+        bull = sum(1 for x in p if x["bias"]=="bullish")
+        bear = sum(1 for x in p if x["bias"]=="bearish")
+        bias = "bullish" if bull > bear else "bearish" if bear > bull else "neutral"
+        return total, p, bias
+
+    def _b(self,c): return abs(float(c["close"])-float(c["open"]))
+    def _uw(self,c): return float(c["high"])-max(float(c["open"]),float(c["close"]))
+    def _lw(self,c): return min(float(c["open"]),float(c["close"]))-float(c["low"])
+    def _bull(self,c): return float(c["close"])>float(c["open"])
+    def _rng(self,c): return float(c["high"])-float(c["low"])
+
+    def _doji(self, candles):
+        p=[]; c=candles[-1]; b=self._b(c); r=self._rng(c)
+        if r==0: return p
+        if b/r < 0.10:
+            uw=self._uw(c); lw=self._lw(c)
+            if lw > uw*2: p.append({"name":"🟢 Dragonfly Doji","bias":"bullish","score":5})
+            elif uw > lw*2: p.append({"name":"🔴 Gravestone Doji","bias":"bearish","score":-5})
+            elif abs(uw-lw) < r*0.1: p.append({"name":"⚪ Long-Legged Doji","bias":"neutral","score":0})
+            else: p.append({"name":"⚪ Doji","bias":"neutral","score":0})
+        return p
+
+    def _marubozu(self, candles):
+        p=[]; c=candles[-1]; b=self._b(c); r=self._rng(c)
+        if r==0: return p
+        if self._uw(c)/r < 0.02 and self._lw(c)/r < 0.02:
+            if self._bull(c): p.append({"name":"🟢 Bullish Marubozu","bias":"bullish","score":8})
+            else: p.append({"name":"🔴 Bearish Marubozu","bias":"bearish","score":-8})
+        return p
+
+    def _hammer(self, candles):
+        p=[]; c=candles[-1]; b=self._b(c); lw=self._lw(c); uw=self._uw(c)
+        if b==0 or self._rng(c)==0: return p
+        closes=[float(x["close"]) for x in candles[-6:-1]]
+        down = len(closes)>=4 and closes[-1]<closes[0]
+        if lw>=b*2 and uw<b*0.5:
+            if down: p.append({"name":"🟢 Hammer","bias":"bullish","score":8})
+            else: p.append({"name":"🔴 Hanging Man","bias":"bearish","score":-5})
+        if uw>=b*2 and lw<b*0.5:
+            if down: p.append({"name":"🟢 Inverted Hammer","bias":"bullish","score":6})
+            else: p.append({"name":"🔴 Shooting Star","bias":"bearish","score":-8})
+        return p
+
+    def _spinning_top(self, candles):
+        p=[]; c=candles[-1]; b=self._b(c); r=self._rng(c)
+        if r==0: return p
+        if 0.10 < b/r < 0.35 and abs(self._uw(c)-self._lw(c))<r*0.3:
+            p.append({"name":"⚪ Spinning Top","bias":"neutral","score":0})
+        return p
+
+    def _belt_hold(self, candles):
+        p=[]; c=candles[-1]; b=self._b(c); r=self._rng(c)
+        if r==0 or b==0: return p
+        closes=[float(x["close"]) for x in candles[-6:-1]]
+        down = len(closes)>=4 and closes[-1]<closes[0]
+        if self._bull(c) and self._lw(c)/r<0.02 and b/r>0.6 and down:
+            p.append({"name":"🟢 Bullish Belt Hold","bias":"bullish","score":5})
+        if not self._bull(c) and self._uw(c)/r<0.02 and b/r>0.6 and not down:
+            p.append({"name":"🔴 Bearish Belt Hold","bias":"bearish","score":-5})
+        return p
+
+    def _engulfing(self, candles):
+        p=[]; c1,c2=candles[-2],candles[-1]
+        if not self._bull(c1) and self._bull(c2) and float(c2["close"])>float(c1["open"]) and float(c2["open"])<float(c1["close"]):
+            p.append({"name":"🟢 Bullish Engulfing","bias":"bullish","score":10})
+        if self._bull(c1) and not self._bull(c2) and float(c2["close"])<float(c1["open"]) and float(c2["open"])>float(c1["close"]):
+            p.append({"name":"🔴 Bearish Engulfing","bias":"bearish","score":-10})
+        return p
+
+    def _harami(self, candles):
+        p=[]; c1,c2=candles[-2],candles[-1]
+        h1,l1=max(float(c1["open"]),float(c1["close"])),min(float(c1["open"]),float(c1["close"]))
+        h2,l2=max(float(c2["open"]),float(c2["close"])),min(float(c2["open"]),float(c2["close"]))
+        if h2<h1 and l2>l1:
+            if not self._bull(c1) and self._bull(c2): p.append({"name":"🟢 Bullish Harami","bias":"bullish","score":6})
+            elif self._bull(c1) and not self._bull(c2): p.append({"name":"🔴 Bearish Harami","bias":"bearish","score":-6})
+        return p
+
+    def _piercing_dark_cloud(self, candles):
+        p=[]; c1,c2=candles[-2],candles[-1]; b1=self._b(c1)
+        if b1==0: return p
+        mid1=(float(c1["open"])+float(c1["close"]))/2
+        if not self._bull(c1) and self._bull(c2) and float(c2["open"])<float(c1["close"]) and float(c2["close"])>mid1:
+            p.append({"name":"🟢 Piercing Line","bias":"bullish","score":10})
+        if self._bull(c1) and not self._bull(c2) and float(c2["open"])>float(c1["close"]) and float(c2["close"])<mid1:
+            p.append({"name":"🔴 Dark Cloud Cover","bias":"bearish","score":-10})
+        return p
+
+    def _tweezer(self, candles):
+        p=[]; c1,c2=candles[-2],candles[-1]
+        tol=self._rng(c1)*0.005 if self._rng(c1)>0 else 0.01
+        if abs(float(c1["low"])-float(c2["low"]))<tol and not self._bull(c1) and self._bull(c2):
+            p.append({"name":"🟢 Tweezer Bottom","bias":"bullish","score":8})
+        if abs(float(c1["high"])-float(c2["high"]))<tol and self._bull(c1) and not self._bull(c2):
+            p.append({"name":"🔴 Tweezer Top","bias":"bearish","score":-8})
+        return p
+
+    def _morning_evening_star(self, candles):
+        p=[]
+        if len(candles)<3: return p
+        c1,c2,c3=candles[-3],candles[-2],candles[-1]
+        b1,b2,b3=self._b(c1),self._b(c2),self._b(c3)
+        if b1==0: return p
+        if not self._bull(c1) and b2<b1*0.3 and self._bull(c3) and b3>b1*0.5:
+            p.append({"name":"🟢 Morning Star","bias":"bullish","score":12})
+        if self._bull(c1) and b2<b1*0.3 and not self._bull(c3) and b3>b1*0.5:
+            p.append({"name":"🔴 Evening Star","bias":"bearish","score":-12})
+        return p
+
+    def _three_soldiers_crows(self, candles):
+        p=[]
+        if len(candles)<3: return p
+        l3=candles[-3:]
+        if all(self._bull(c) for c in l3) and float(l3[1]["close"])>float(l3[0]["close"]) and float(l3[2]["close"])>float(l3[1]["close"]):
+            p.append({"name":"🟢 Three White Soldiers","bias":"bullish","score":12})
+        if all(not self._bull(c) for c in l3) and float(l3[1]["close"])<float(l3[0]["close"]) and float(l3[2]["close"])<float(l3[1]["close"]):
+            p.append({"name":"🔴 Three Black Crows","bias":"bearish","score":-12})
+        return p
+
+    def _three_inside(self, candles):
+        p=[]
+        if len(candles)<3: return p
+        c1,c2,c3=candles[-3],candles[-2],candles[-1]
+        h1,l1=max(float(c1["open"]),float(c1["close"])),min(float(c1["open"]),float(c1["close"]))
+        h2,l2=max(float(c2["open"]),float(c2["close"])),min(float(c2["open"]),float(c2["close"]))
+        if h2<h1 and l2>l1:  # c2 inside c1 (harami condition)
+            if not self._bull(c1) and self._bull(c2) and float(c3["close"])>h1:
+                p.append({"name":"🟢 Three Inside Up","bias":"bullish","score":10})
+            if self._bull(c1) and not self._bull(c2) and float(c3["close"])<l1:
+                p.append({"name":"🔴 Three Inside Down","bias":"bearish","score":-10})
+        return p
+
+    def _abandoned_baby(self, candles):
+        p=[]
+        if len(candles)<3: return p
+        c1,c2,c3=candles[-3],candles[-2],candles[-1]
+        b2=self._b(c2); r2=self._rng(c2)
+        if r2==0 or b2/r2>0.10: return p  # c2 must be doji
+        if not self._bull(c1) and self._bull(c3) and float(c2["high"])<float(c1["low"]) and float(c2["high"])<float(c3["low"]):
+            p.append({"name":"🟢 Bullish Abandoned Baby","bias":"bullish","score":15})
+        if self._bull(c1) and not self._bull(c3) and float(c2["low"])>float(c1["high"]) and float(c2["low"])>float(c3["high"]):
+            p.append({"name":"🔴 Bearish Abandoned Baby","bias":"bearish","score":-15})
+        return p
+
+    def _double_top_bottom(self, candles):
+        p=[]; highs=[float(c["high"]) for c in candles[-15:]]; lows=[float(c["low"]) for c in candles[-15:]]
+        hs=sorted(enumerate(highs),key=lambda x:x[1],reverse=True)
+        if len(hs)>=2 and abs(hs[0][0]-hs[1][0])>=3 and abs(hs[0][1]-hs[1][1])/hs[0][1]<0.01:
+            p.append({"name":"🔴 Double Top","bias":"bearish","score":-10})
+        ls=sorted(enumerate(lows),key=lambda x:x[1])
+        if len(ls)>=2 and abs(ls[0][0]-ls[1][0])>=3 and abs(ls[0][1]-ls[1][1])/max(ls[0][1],1)<0.01:
+            p.append({"name":"🟢 Double Bottom","bias":"bullish","score":10})
+        return p
+
+    def _flag(self, candles):
+        p=[]
+        if len(candles)<10: return p
+        pole=candles[-10:-5]; flag=candles[-5:]
+        pm=float(pole[-1]["close"])-float(pole[0]["open"])
+        fr=max(float(c["high"]) for c in flag)-min(float(c["low"]) for c in flag)
+        pr=abs(pm)
+        if pr>0 and fr<pr*0.4:
+            if pm>0: p.append({"name":"🟢 Bullish Flag","bias":"bullish","score":8})
+            else: p.append({"name":"🔴 Bearish Flag","bias":"bearish","score":-8})
+        return p
+
+    def _head_shoulders(self, candles):
+        p=[]
+        if len(candles)<20: return p
+        highs=[float(c["high"]) for c in candles[-20:]]
+        # Find 3 peaks: left shoulder, head, right shoulder
+        peaks=[]
+        for i in range(2, len(highs)-2):
+            if highs[i]>highs[i-1] and highs[i]>highs[i-2] and highs[i]>highs[i+1] and highs[i]>highs[i+2]:
+                peaks.append((i, highs[i]))
+        if len(peaks)>=3:
+            ls,head,rs=peaks[-3],peaks[-2],peaks[-1]
+            if head[1]>ls[1] and head[1]>rs[1] and abs(ls[1]-rs[1])/ls[1]<0.02:
+                p.append({"name":"🔴 Head & Shoulders","bias":"bearish","score":-12})
+        # Inverse
+        lows=[float(c["low"]) for c in candles[-20:]]
+        troughs=[]
+        for i in range(2, len(lows)-2):
+            if lows[i]<lows[i-1] and lows[i]<lows[i-2] and lows[i]<lows[i+1] and lows[i]<lows[i+2]:
+                troughs.append((i, lows[i]))
+        if len(troughs)>=3:
+            ls,head,rs=troughs[-3],troughs[-2],troughs[-1]
+            if head[1]<ls[1] and head[1]<rs[1] and abs(ls[1]-rs[1])/ls[1]<0.02:
+                p.append({"name":"🟢 Inverse Head & Shoulders","bias":"bullish","score":12})
+        return p
+
+    def _triangle(self, candles):
+        p=[]
+        if len(candles)<15: return p
+        highs=[float(c["high"]) for c in candles[-15:]]
+        lows=[float(c["low"]) for c in candles[-15:]]
+        h_slope=(highs[-1]-highs[0])/len(highs)
+        l_slope=(lows[-1]-lows[0])/len(lows)
+        if h_slope<0 and l_slope>0:
+            p.append({"name":"⚪ Symmetrical Triangle","bias":"neutral","score":0})
+        return p
 
 # ══════════════════════════════════════════════════════════════
-# SIGNAL ENGINE v4.0
-# Multi-timeframe analysis + pattern detection + technical indicators.
+# SIGNAL ENGINE v5.0 — 4-Layer Decision System
 # ══════════════════════════════════════════════════════════════
 class SignalEngine:
     def __init__(self, api: DeltaAPI):
         self.api = api
         self.patterns = PatternDetector()
-        self.last_spots = []  # Spot price history for fallback
+        self.daily_bias = "UNKNOWN"
+        self.bias_last_updated = None
+
+    def update_daily_bias(self, symbol="BTCUSD"):
+        """LAYER 1: Macro bias from 1W + 1D candles."""
+        log.info("🌍 DAILY BIAS ASSESSMENT:")
+        bias_votes = []
+
+        for tf, label in [("1w", "Weekly"), ("1d", "Daily")]:
+            candles = self.api.get_candles(symbol, tf, 30)
+            if not candles:
+                log.info(f"    📅 {label} ({tf}): ⚪ No data")
+                continue
+            closes = [float(c["close"]) for c in candles]
+            rsi = self._rsi(closes)
+            direction = "neutral"
+            score = 50
+
+            if len(closes) >= 21:
+                e9 = self._ema(closes, 9); e21 = self._ema(closes, 21)
+                if e9[-1] > e21[-1]: score += 15
+                else: score -= 15
+
+            if rsi < 40: score += 10
+            elif rsi > 60: score -= 10
+
+            if len(closes) >= 5:
+                ups = sum(1 for i in range(-5,0) if i+1<0 and closes[i]<closes[i+1])
+                if ups >= 3: score += 5
+                else: score -= 5
+
+            direction = "BULLISH" if score >= 55 else "BEARISH" if score <= 45 else "NEUTRAL"
+            bias_votes.append(direction)
+
+            emoji = "🟢" if direction=="BULLISH" else "🔴" if direction=="BEARISH" else "⚪"
+            trend = "↑" if direction=="BULLISH" else "↓" if direction=="BEARISH" else "→"
+            ema_s = "EMA9>EMA21" if score>=55 else "EMA9<EMA21" if score<=45 else "EMA flat"
+            log.info(f"    📅 {label:6s} ({tf}): {emoji} {direction:8s} | {ema_s} | RSI: {rsi:.0f} | Trend: {trend}")
+
+        # Determine overall bias
+        if bias_votes.count("BULLISH") >= 1 and "BEARISH" not in bias_votes:
+            self.daily_bias = "BULLISH"
+        elif bias_votes.count("BEARISH") >= 1 and "BULLISH" not in bias_votes:
+            self.daily_bias = "BEARISH"
+        elif "BULLISH" in bias_votes and "BEARISH" in bias_votes:
+            self.daily_bias = "CHOPPY"
+        else:
+            self.daily_bias = "CHOPPY"
+
+        emoji = "🟢" if self.daily_bias=="BULLISH" else "🔴" if self.daily_bias=="BEARISH" else "🟡"
+        rule = "Only CALL options" if self.daily_bias=="BULLISH" else "Only PUT options" if self.daily_bias=="BEARISH" else "NO TRADING — conflicting signals"
+        log.info(f"    🏷️  TODAY'S BIAS: {emoji} {self.daily_bias}")
+        log.info(f"    📋 Rule: {rule}")
+        self.bias_last_updated = datetime.now(pytz.UTC)
 
     def evaluate(self, symbol="BTCUSD"):
-        """Primary evaluation function.
-        Returns: (signal, score, method, near_fib, spot_price)
-        
-        Uses multi-timeframe confirmation:
-        1. Get the primary signal from 10m candles
-        2. Confirm with 5m, 15m, 1h timeframes
-        3. Add pattern detection bonus/penalty
-        4. Require at least 3 of 4 timeframes to agree
-        """
+        """Full 4-layer evaluation. Returns (signal, score, method, bias, spot)."""
         spot = self.api.get_spot_price(symbol)
-        
-        # Save spot for fallback
-        if spot > 0: self.last_spots.append(spot)
-        if len(self.last_spots) > 20: self.last_spots.pop(0)
-        
-        # ── MULTI-TIMEFRAME ANALYSIS ──
-        log.info("    📊 MULTI-TIMEFRAME ANALYSIS:")
-        tf_results = {}
-        pattern_score = 0
-        pattern_list = []
-        
+
+        # Refresh bias every 4 hours
+        if not self.bias_last_updated or (datetime.now(pytz.UTC) - self.bias_last_updated).seconds > 14400:
+            self.update_daily_bias(symbol)
+
+        # LAYER 1 CHECK: No trade on choppy days
+        if self.daily_bias == "CHOPPY":
+            log.info("    🟡 Market is CHOPPY — no hunting today.")
+            return "NEUTRAL", 0, "choppy_bias", self.daily_bias, spot
+
+        # LAYER 2: Higher TF confirmation (15m, 1h, 4h)
+        log.info("    📊 HIGHER TF CONFIRMATION:")
+        confirm_count = 0
         for tf in CONFIRM_TIMEFRAMES:
             candles = self.api.get_candles(symbol, tf, CANDLE_LIMIT)
-            
             if not candles:
-                tf_results[tf] = {"direction": "neutral", "score": 50, "reason": "no_data"}
                 log.info(f"        {tf:>4s}: ⚪ No data")
                 continue
-            
-            # Calculate indicators for this timeframe
-            closes = [float(c['close']) for c in candles]
-            score = 50  # Start neutral
-            
-            # RSI
-            rsi = self._rsi(closes)
-            if rsi < 35: score += 15
-            elif rsi < 45: score += 8
-            elif rsi > 65: score -= 15
-            elif rsi > 55: score -= 8
-            
-            # EMA crossover (9 vs 21)
-            if len(closes) >= 21:
-                ema9 = self._ema(closes, 9)
-                ema21 = self._ema(closes, 21)
-                if ema9[-1] > ema21[-1]: score += 10
-                else: score -= 10
-            
-            # Momentum (current vs 5 periods ago)
-            if len(closes) >= 5:
-                if closes[-1] > closes[-5]: score += 5
-                else: score -= 5
-            
-            # Pattern detection (only on primary timeframe)
-            if tf == PRIMARY_TIMEFRAME:
-                p_score, p_list, p_bias = self.patterns.analyze(candles)
-                pattern_score = p_score
-                pattern_list = p_list
-                score += p_score
-                
-                if p_list:
-                    log.info(f"        🕯️  PATTERNS on {tf}:")
-                    for p in p_list:
-                        log.info(f"            {p['name']} ({p['score']:+d} pts)")
-            
-            score = max(0, min(100, score))
-            direction = "bullish" if score >= 55 else "bearish" if score <= 45 else "neutral"
-            
-            emoji = "🟢" if direction == "bullish" else "🔴" if direction == "bearish" else "⚪"
-            log.info(f"        {tf:>4s}: {emoji} {direction:>8s} | Score: {score:.0f} | RSI: {rsi:.0f}")
-            
-            tf_results[tf] = {"direction": direction, "score": score, "reason": "candle_analysis"}
-        
-        # ── CONSENSUS CHECK ──
-        # Count how many timeframes agree
-        bullish_count = sum(1 for v in tf_results.values() if v["direction"] == "bullish")
-        bearish_count = sum(1 for v in tf_results.values() if v["direction"] == "bearish")
-        
-        log.info(f"    📐 Consensus: {bullish_count} bullish | {bearish_count} bearish | {len(tf_results)-bullish_count-bearish_count} neutral")
-        
-        # Primary timeframe score (10m) is the base
-        primary = tf_results.get(PRIMARY_TIMEFRAME, {"score": 50, "direction": "neutral"})
-        final_score = primary["score"]
-        
-        # Need at least 3 of 4 to agree for a strong signal
-        if bullish_count >= 3:
-            sig = "BUY"
-            # Boost score based on consensus strength
-            final_score = min(100, final_score + (bullish_count - 2) * 5)
-        elif bearish_count >= 3:
-            sig = "SELL"
-            final_score = max(0, final_score - (bearish_count - 2) * 5)
+            closes = [float(c["close"]) for c in candles]
+            rsi = self._rsi(closes); score = 50
+            if len(closes)>=21:
+                e9=self._ema(closes,9); e21=self._ema(closes,21)
+                if e9[-1]>e21[-1]: score+=12
+                else: score-=12
+            if rsi<40: score+=10
+            elif rsi>60: score-=10
+            if len(closes)>=5:
+                if closes[-1]>closes[-5]: score+=5
+                else: score-=5
+
+            direction = "BULLISH" if score>=55 else "BEARISH" if score<=45 else "NEUTRAL"
+            emoji = "🟢" if direction=="BULLISH" else "🔴" if direction=="BEARISH" else "⚪"
+            log.info(f"        {tf:>4s}: {emoji} {direction:8s} | RSI: {rsi:.0f} | Score: {score}")
+
+            if (self.daily_bias=="BULLISH" and direction=="BULLISH") or (self.daily_bias=="BEARISH" and direction=="BEARISH"):
+                confirm_count += 1
+
+        log.info(f"    📐 Confirmation: {confirm_count}/{len(CONFIRM_TIMEFRAMES)} align with {self.daily_bias} bias")
+        if confirm_count < 2:
+            log.info("    ⚠️  Higher TFs don't confirm daily bias — standing down.")
+            return "NEUTRAL", 0, "no_confirmation", self.daily_bias, spot
+
+        # LAYER 3: Entry trigger on 5m
+        log.info(f"    📊 ENTRY ANALYSIS ({PRIMARY_TIMEFRAME} base):")
+        candles = self.api.get_candles(symbol, PRIMARY_TIMEFRAME, CANDLE_LIMIT)
+        if not candles:
+            log.info(f"        ⚪ No {PRIMARY_TIMEFRAME} data")
+            return "NEUTRAL", 0, "no_5m_data", self.daily_bias, spot
+
+        closes = [float(c["close"]) for c in candles]
+        entry_score = 50
+
+        # RSI
+        rsi = self._rsi(closes)
+        if rsi < 30: entry_score += 18
+        elif rsi < 40: entry_score += 12
+        elif rsi < 45: entry_score += 6
+        elif rsi > 70: entry_score -= 18
+        elif rsi > 60: entry_score -= 12
+        elif rsi > 55: entry_score -= 6
+
+        # EMA crossover
+        if len(closes) >= 21:
+            e9=self._ema(closes,9); e21=self._ema(closes,21)
+            if e9[-1]>e21[-1]: entry_score+=10
+            else: entry_score-=10
+
+        # MACD
+        if len(closes) >= 26:
+            macd_line = [a-b for a,b in zip(self._ema(closes,12), self._ema(closes,26))]
+            signal_line = self._ema(macd_line, 9)
+            if macd_line[-1] > signal_line[-1] and macd_line[-2] <= signal_line[-2]:
+                entry_score += 8; log.info("        MACD: 🟢 Bullish cross (+8)")
+            elif macd_line[-1] < signal_line[-1] and macd_line[-2] >= signal_line[-2]:
+                entry_score -= 8; log.info("        MACD: 🔴 Bearish cross (-8)")
+
+        # Momentum
+        if len(closes)>=5:
+            if closes[-1]>closes[-5]: entry_score+=5
+            else: entry_score-=5
+
+        # Pattern detection on 5m
+        p_score, p_list, p_bias = self.patterns.analyze(candles)
+        entry_score += p_score
+        if p_list:
+            log.info(f"        🕯️  PATTERNS ({len(p_list)} found):")
+            for p in p_list[:8]:
+                log.info(f"            {p['name']} ({p['score']:+d})")
+
+        entry_score = max(0, min(100, entry_score))
+        log.info(f"        RSI: {rsi:.0f} | EMA: {'↑' if entry_score>50 else '↓'} | Patterns: {p_score:+d} | TOTAL: {entry_score}")
+
+        # Direction must match daily bias
+        if self.daily_bias == "BULLISH":
+            sig = "BUY" if entry_score >= OPTIONS_MIN_SCORE else "NEUTRAL"
         else:
-            sig = "NEUTRAL"
-        
-        # ── FALLBACK: No candle data at all ──
-        if all(v["reason"] == "no_data" for v in tf_results.values()):
-            log.warning("    ⚠️  All timeframes returned no data — Using Spot Fallback")
-            if len(self.last_spots) < 2: 
-                return "NEUTRAL", 0, "no_data", False, spot
-            change = (self.last_spots[-1] - self.last_spots[0]) / self.last_spots[0]
-            final_score = 50 + (change * 1000)
-            final_score = max(0, min(100, final_score))
-            sig = "BUY" if final_score >= 55 else "SELL" if final_score <= 45 else "NEUTRAL"
-            return sig, final_score, "spot_fallback", False, spot
-        
-        return sig, final_score, "multi_tf_patterns", False, spot
+            sig = "SELL" if (100-entry_score) >= OPTIONS_MIN_SCORE else "NEUTRAL"
+
+        return sig, entry_score, "full_analysis", self.daily_bias, spot
 
     def _ema(self, data, p):
-        """Exponential Moving Average."""
-        k = 2/(p+1); ema = [data[0]]
-        for v in data[1:]: ema.append(v*k + ema[-1]*(1-k))
+        k=2/(p+1); ema=[data[0]]
+        for v in data[1:]: ema.append(v*k+ema[-1]*(1-k))
         return ema
 
     def _rsi(self, closes, p=14):
-        """Relative Strength Index."""
-        if len(closes) < p+1: return 50
-        deltas = np.diff(closes)
-        gains = np.where(deltas > 0, deltas, 0)
-        losses = np.where(deltas < 0, -deltas, 0)
-        avg_g = np.mean(gains[:p]); avg_l = np.mean(losses[:p])
-        for i in range(p, len(gains)):
-            avg_g = (avg_g * (p-1) + gains[i]) / p
-            avg_l = (avg_l * (p-1) + losses[i]) / p
-        if avg_l == 0: return 100
-        return 100 - (100 / (1 + avg_g/avg_l))
-
+        if len(closes)<p+1: return 50
+        d=np.diff(closes); g=np.where(d>0,d,0); l=np.where(d<0,-d,0)
+        ag=np.mean(g[:p]); al=np.mean(l[:p])
+        for i in range(p,len(g)): ag=(ag*(p-1)+g[i])/p; al=(al*(p-1)+l[i])/p
+        if al==0: return 100
+        return 100-(100/(1+ag/al))
 
 # ══════════════════════════════════════════════════════════════
-# MAIN BOT CLASS
-# Controls the loop, monitors positions with trailing stop,
-# enforces max 1 position, sets leverage, and directs trading.
+# MAIN BOT — v5.0 "One Kill a Day"
 # ══════════════════════════════════════════════════════════════
 class OptionsTradingBot:
-    def __init__(self, capital=15000):
+    def __init__(self):
         self.api = DeltaAPI()
         self.signals = SignalEngine(self.api)
         self.positions: List[OptionsPosition] = []
-        
-        log.info("🎯 BOT v4.0 STARTING...")
-        log.info(f"    ⚙️  Config: Cycle={CYCLE_INTERVAL}s | Score≥{OPTIONS_MIN_SCORE} | Leverage={LEVERAGE}x | MaxPos={MAX_POSITIONS}")
+        self.last_trade_date = None
+
+        log.info("🎯 BOT v5.0 — 'One Kill a Day' Engine STARTING")
+        log.info(f"    ⚙️  Cycle: {CYCLE_INTERVAL}s | Score≥{OPTIONS_MIN_SCORE} | Leverage: {LEVERAGE}x | MaxTrades: {MAX_TRADES_PER_DAY}/day")
+        log.info(f"    ⚙️  Base TF: {PRIMARY_TIMEFRAME} | Confirm: {', '.join(CONFIRM_TIMEFRAMES)} | Macro: {', '.join(MACRO_TIMEFRAMES)}")
         log.info(f"    ⚙️  Trailing Stop: {TRAILING_STOP_PCT*100:.0f}% from peak | Max Hold: {MAX_HOLD_HOURS}h")
-        log.info(f"    ⚙️  Timeframes: {', '.join(CONFIRM_TIMEFRAMES)} | Primary: {PRIMARY_TIMEFRAME}")
-        
+        log.info(f"    ⚙️  Position Sizing: {OPTIONS_RISK_PCT*100:.0f}% of wallet × {LEVERAGE}x leverage")
+
         wallet = self.api.get_wallet_balance()
-        self.capital = wallet.get("available", capital) if wallet.get("available", 0) > 0 else capital
-        log.info(f"    💰 Capital: ${self.capital:,.2f} | Mode: {'PAPER' if PAPER_TRADE else 'LIVE/TESTNET'}")
-        
+        self.wallet_balance = wallet.get("available", 0)
+        if self.wallet_balance > 0:
+            log.info(f"    💰 Wallet: ${self.wallet_balance:,.2f} | Notional: ${self.wallet_balance*LEVERAGE:,.2f} | Mode: {'PAPER' if PAPER_TRADE else 'LIVE'}")
+        else:
+            log.info(f"    💰 Wallet: unavailable | Mode: {'PAPER' if PAPER_TRADE else 'LIVE'}")
+
         self._load()
+        self.signals.update_daily_bias()
 
     def _load(self):
-        """Load saved positions from disk, properly reconstructing OptionContract objects."""
         data = _load_json(POSITIONS_FILE, [])
         for d in data:
             if d.get("status") == "open":
                 try:
-                    # The 'contract' field is saved as a dict — reconstruct it
-                    contract_data = d.pop("contract", {})
-                    if isinstance(contract_data, dict):
-                        contract = OptionContract(**contract_data)
-                    else:
-                        contract = contract_data
+                    cd = d.pop("contract", {})
+                    contract = OptionContract(**cd) if isinstance(cd, dict) else cd
                     pos = OptionsPosition(contract=contract, **d)
                     self.positions.append(pos)
-                    log.info(f"    📂 Loaded position: {contract.symbol} | Entry: ${pos.entry_premium:.4f}")
+                    log.info(f"    📂 Loaded: {contract.symbol} | Entry: ${pos.entry_premium:.4f}")
                 except Exception as e:
-                    log.warning(f"    ⚠️  Could not load position: {e}")
+                    log.warning(f"    ⚠️  Load error: {e}")
 
     def run(self):
-        """Main infinite loop."""
         log.info("═══════════════════════════════════════════════════")
-        log.info("🐺  THE HUNT BEGINS — v4.0 Multi-Timeframe Engine")
+        log.info("🐺  THE HUNT BEGINS — v5.0 One Kill a Day")
         log.info("═══════════════════════════════════════════════════")
         while True:
             try:
                 self._cycle()
-                mins = CYCLE_INTERVAL // 60
-                secs = CYCLE_INTERVAL % 60
-                log.info(f"💤 Resting {mins}m {secs}s before next hunt...\n")
+                log.info(f"💤 Resting {CYCLE_INTERVAL}s before next scan...\n")
                 time.sleep(CYCLE_INTERVAL)
-            except KeyboardInterrupt: 
-                log.info("🛑 Hunter called off — shutting down gracefully.")
-                break
-            except Exception as e: 
-                log.error(f"🩸 Wounded! Error: {e} — recovering in 60s...")
-                time.sleep(60)
+            except KeyboardInterrupt:
+                log.info("🛑 Shutting down."); break
+            except Exception as e:
+                log.error(f"🩸 Error: {e} — recovering in 60s..."); time.sleep(60)
 
     def _cycle(self):
-        """One cycle of the trading bot."""
         ts = datetime.now(pytz.UTC).strftime('%H:%M:%S UTC')
-        log.info(f"══════════ 🔄 NEW HUNT CYCLE — {ts} ══════════")
-        
-        # ── STEP 1: Monitor existing positions with trailing stop ──
-        open_positions = [p for p in self.positions if p.status == "open"]
-        if open_positions:
-            log.info(f"👁️  Watching {len(open_positions)} captured prey...")
-            for pos in open_positions:
-                self._monitor(pos)
-        
-        # ── STEP 2: Enforce max 1 position ──
-        active_count = len([p for p in self.positions if p.status == "open"])
-        if active_count >= MAX_POSITIONS:
-            log.info(f"🎒 Max {MAX_POSITIONS} position(s) active — no new hunts.")
+        log.info(f"══════════ 🔄 HUNT CYCLE — {ts} ══════════")
+
+        # Monitor existing positions
+        open_pos = [p for p in self.positions if p.status == "open"]
+        if open_pos:
+            log.info(f"👁️  Monitoring {len(open_pos)} active position(s)...")
+            for pos in open_pos: self._monitor(pos)
+
+        # Check daily trade limit
+        today = datetime.now(pytz.UTC).date()
+        if self.last_trade_date == today:
+            log.info("🏆 Already made our kill today — resting until tomorrow.")
             return
-        
-        # ── STEP 3: Multi-timeframe signal analysis ──
-        log.info("👃 Sniffing the market across timeframes...")
-        sig, score, cond, near_fib, spot = self.signals.evaluate()
-        
-        score_bar = "█" * int(score / 5) + "░" * (20 - int(score / 5))
-        direction = "🟢 BULLISH" if sig == "BUY" else "🔴 BEARISH" if sig == "SELL" else "⚪ NEUTRAL"
-        log.info(f"📡 Final Verdict: {direction} | Score: [{score_bar}] {score:.1f}/100 | BTC: ${spot:,.2f}")
-        
-        # Check threshold
+
+        # Check max positions
+        active = len([p for p in self.positions if p.status == "open"])
+        if active >= MAX_POSITIONS:
+            log.info("🎒 Position active — monitoring only.")
+            return
+
+        # Run 4-layer analysis
+        log.info("👃 Running 4-layer analysis...")
+        sig, score, method, bias, spot = self.signals.evaluate()
+
+        bar = "█" * int(score/5) + "░" * (20-int(score/5))
+        d = "🟢 BULLISH" if sig=="BUY" else "🔴 BEARISH" if sig=="SELL" else "⚪ NEUTRAL"
+        log.info(f"📡 Verdict: {d} | Score: [{bar}] {score:.0f}/100 | Bias: {bias} | BTC: ${spot:,.2f}")
+
         if sig == "NEUTRAL":
-            log.info("😴 No consensus across timeframes — standing down.")
-            return
-        if score < OPTIONS_MIN_SCORE and sig == "BUY":
-            log.info(f"😴 Score {score:.1f} below threshold {OPTIONS_MIN_SCORE} for BUY — standing down.")
-            return
-        if (100 - score) < OPTIONS_MIN_SCORE and sig == "SELL":
-            log.info(f"😴 Score {score:.1f} above threshold for SELL — standing down.")
+            log.info("😴 Criteria not met — standing down.")
             return
 
-        log.info(f"🔥 SIGNAL LOCKED: {sig} — Score {score:.1f} passes. Moving in...")
-
-        # ── STEP 4: Fetch options chain ──
-        log.info(f"🔭 Scanning the options jungle for {BASE_UNDERLYING} contracts...")
+        # Fetch options chain
+        log.info(f"🔭 Scanning options for {BASE_UNDERLYING}...")
         chain = self.api.get_options_chain(BASE_UNDERLYING)
-        if not chain: 
-            log.warning("🏜️  The jungle is EMPTY — no contracts found!")
-            return
+        if not chain:
+            log.warning("🏜️  No contracts found!"); return
 
-        # Filter by type needed
-        option_type_needed = "call" if sig == "BUY" else "put"
-        matching = [c for c in chain if c["type"] == option_type_needed]
-        tradeable = [c for c in matching if c["tradeable"]]
-        log.info(f"🗺️  Terrain: {len(chain)} total | {len(matching)} {option_type_needed.upper()}s | {len(tradeable)} tradeable")
+        opt_type = "call" if sig == "BUY" else "put"
+        matching = [c for c in chain if c["type"] == opt_type and c["tradeable"]]
+        log.info(f"🗺️  Found {len(matching)} tradeable {opt_type.upper()}s")
 
-        # ── STEP 5: Pick the target strike using GREEKS ──
+        if not matching:
+            log.warning(f"💀 No tradeable {opt_type.upper()} options!"); return
+
+        # Greeks-based selection
         target = spot * 1.01 if sig == "BUY" else spot * 0.99
-        log.info(f"🎯 Locking crosshairs on {option_type_needed.upper()} near strike ${target:,.0f}...")
-        
-        # Score each contract using Greeks
-        # Ideal prey: |Delta| 0.25-0.50 (ATM/slight OTM), high Gamma, low Theta decay  
-        scored_options = []
         for c in matching:
-            if not c["tradeable"]: continue
-            
-            # GREEK-BASED SCORING (hunt for the best prey)
-            g_score = 0
-            d = abs(c.get("delta", 0))
-            gamma = abs(c.get("gamma", 0))
-            theta = c.get("theta", 0)  # Theta is negative (decay)
-            vega = abs(c.get("vega", 0))
-            iv = c.get("iv", 0)
-            
-            # Delta scoring: Sweet spot is 0.25-0.50 (good directional exposure)
-            if 0.30 <= d <= 0.50: g_score += 20     # 🎯 Perfect range
-            elif 0.20 <= d <= 0.60: g_score += 10   # ✅ Acceptable
-            elif d > 0.70: g_score += 5              # Deep ITM, expensive
-            else: g_score -= 5                        # Too far OTM
-            
-            # Gamma scoring: Higher gamma = more responsive to price moves
-            if gamma > 0.005: g_score += 10
-            elif gamma > 0.001: g_score += 5
-            
-            # Theta scoring: Less negative theta = less daily decay eating profits
-            if theta > -50: g_score += 10    # Low decay
-            elif theta > -100: g_score += 5  # Moderate decay
-            else: g_score -= 5               # Heavy decay
-            
-            # Vega scoring: High vega profits from volatility expansion
-            if vega > 10: g_score += 5
-            
-            # Strike proximity scoring
-            strike_diff = abs(c["strike"] - target)
-            proximity_score = max(0, 20 - (strike_diff / spot) * 100)
-            g_score += proximity_score
-            
-            scored_options.append({**c, "greek_score": g_score})
-        
-        # Sort by greek_score (highest first)
-        scored_options.sort(key=lambda x: x["greek_score"], reverse=True)
-        
-        # Log top 3 candidates
-        if scored_options:
-            log.info(f"🏹 TOP PREY CANDIDATES (ranked by Greeks):")
-            for i, c in enumerate(scored_options[:3]):
-                d = c.get('delta', 0)
-                gamma = c.get('gamma', 0)
-                theta = c.get('theta', 0)
-                vega = c.get('vega', 0)
-                iv = c.get('iv', 0)
-                # Show delta strength bar
-                d_bar = "█" * min(10, int(abs(d) * 20)) + "░" * (10 - min(10, int(abs(d) * 20)))
-                rank = "👑" if i == 0 else "  " + str(i+1) + "."
-                log.info(f"    {rank} {c['symbol']} | Score: {c['greek_score']:.0f}")
-                log.info(f"       ⚔️  STRENGTHS & WEAKNESSES:")
-                log.info(f"       └─ Δ Delta (Speed):     [{d_bar}] {d:+.4f} {'⚡ Fast' if abs(d) > 0.3 else '🐌 Slow'}")
-                log.info(f"       └─ Γ Gamma (Reflexes):  {gamma:.6f} {'🎯 Sharp' if gamma > 0.003 else '😴 Dull'}")
-                log.info(f"       └─ Θ Theta (Decay):     {theta:.4f}/day {'🟢 Low bleed' if theta > -50 else '🔴 Heavy bleed'}")
-                log.info(f"       └─ V Vega (Vol. Sens.): {vega:.4f} {'💪 Strong' if vega > 10 else '😐 Weak'}")
-                log.info(f"       └─ IV (Fear Level):     {iv:.1f}% {'🔥 High fear' if iv > 60 else '😎 Calm'}")
-                log.info(f"       └─ 💰 Bid/Ask: ${c['bid']:.4f}/${c['ask']:.4f} | Spread: {c['spread_pct']*100:.1f}%")
-        
-        best = scored_options[0] if scored_options else None
-        
-        # Fallback: any option with a mark price if no scored options
-        if not best:
-            log.warning("⚠️  No tradeable options with Greeks — widening search...")
-            min_diff = 999999
-            for c in matching:
-                if c["mark_price"] > 0:
-                    diff = abs(c["strike"] - target)
-                    if diff < min_diff:
-                        min_diff = diff; best = c
+            d_abs = abs(c.get("delta", 0)); gs = 0
+            if 0.30 <= d_abs <= 0.50: gs += 20
+            elif 0.20 <= d_abs <= 0.60: gs += 10
+            if abs(c.get("gamma",0)) > 0.003: gs += 10
+            if c.get("theta",0) > -50: gs += 10
+            gs += max(0, 20 - (abs(c["strike"]-target)/spot)*100)
+            c["greek_score"] = gs
 
-        # ── STEP 6: Execute ──
-        if best:
-            log.info(f"══════════════════════════════════════════════")
-            log.info(f"🎯 PREY SELECTED — {best['symbol']}")
-            log.info(f"    └─ Strike:    ${best['strike']:,.0f}")
-            log.info(f"    └─ Mark:      ${best['mark_price']:.4f}")
-            log.info(f"    └─ Δ={best.get('delta',0):+.4f} Γ={best.get('gamma',0):.6f} Θ={best.get('theta',0):.2f} V={best.get('vega',0):.2f}")
-            log.info(f"    └─ IV:        {best.get('iv',0):.1f}%")
-            log.info(f"══════════════════════════════════════════════")
-            log.info(f"🏹 ATTACKING — Setting leverage and placing order...")
-            self._open(best, sig)
-        else:
-            log.warning(f"💀 HUNT FAILED — No {option_type_needed.upper()} options to attack!")
+        matching.sort(key=lambda x: x["greek_score"], reverse=True)
+        best = matching[0]
+
+        # Log top candidates
+        log.info(f"🏹 TOP PREY (by Greeks):")
+        for i, c in enumerate(matching[:3]):
+            rank = "👑" if i==0 else f"  {i+1}."
+            log.info(f"    {rank} {c['symbol']} | GScore: {c['greek_score']:.0f}")
+            log.info(f"       Δ={c.get('delta',0):+.4f} Γ={c.get('gamma',0):.6f} Θ={c.get('theta',0):.2f} IV={c.get('iv',0):.1f}%")
+
+        log.info(f"🔥 THIS IS THE ONE — {best['symbol']}")
+        self._open(best, sig)
 
     def _open(self, bc, sig):
-        """Open a new position with leverage and trailing stop."""
-        # ── Set Leverage ──
-        log.info(f"    ⚙️  Setting leverage to {LEVERAGE}x...")
+        # Refresh wallet for full sizing
+        wallet = self.api.get_wallet_balance()
+        available = wallet.get("available", self.wallet_balance) if wallet.get("available", 0) > 0 else self.wallet_balance
+
         self.api.set_leverage(bc["product_id"], LEVERAGE)
-        
-        # ── Calculate entry price and quantity ──
+
+        notional = available * LEVERAGE
         ep = bc["ask"] if bc["ask"] > 0 else bc["mark_price"]
-        budget = self.capital * OPTIONS_RISK_PCT
-        qty = max(1, int(budget / max(ep, 0.01)))
-        
-        log.info(f"    💰 Budget: ${budget:.2f} | Price: ${ep:.4f} | Qty: {qty} | Leverage: {LEVERAGE}x")
-        log.info(f"    📤 Sending {'PAPER' if PAPER_TRADE else 'LIVE'} order to Delta Exchange...")
-        
+        qty = max(1, int(notional / max(ep, 0.01)))
+
+        log.info(f"    💰 Wallet: ${available:,.2f} | Notional ({LEVERAGE}x): ${notional:,.2f}")
+        log.info(f"    💰 Buying {qty}x @ ${ep:.4f}")
+        log.info(f"    📤 {'PAPER' if PAPER_TRADE else 'LIVE'} order...")
+
         order = self.api.place_order(bc["product_id"], "buy", qty, bc["symbol"])
-        
+
         if order.get("success"):
-            # Trailing stop: stop starts at entry * (1 - trail_pct)
-            initial_stop = ep * (1 - TRAILING_STOP_PCT)
-            
+            stop = ep * (1-TRAILING_STOP_PCT)
             pos = OptionsPosition(
-                contract=OptionContract(
-                    symbol=bc["symbol"], underlying=BASE_UNDERLYING, expiry="", 
-                    strike=bc["strike"], option_type=bc["type"], premium=ep, 
-                    delta=bc.get("delta", 0), implied_vol=bc.get("iv", 0) / 100 if bc.get("iv", 0) > 1 else bc.get("iv", 0.5), 
-                    open_interest=0,
-                    bid=bc["bid"], ask=bc["ask"], spread_pct=bc["spread_pct"], 
+                contract=OptionContract(symbol=bc["symbol"], underlying=BASE_UNDERLYING, expiry="",
+                    strike=bc["strike"], option_type=bc["type"], premium=ep,
+                    delta=bc.get("delta",0), implied_vol=bc.get("iv",0)/100 if bc.get("iv",0)>1 else 0.5,
+                    open_interest=0, bid=bc["bid"], ask=bc["ask"], spread_pct=bc["spread_pct"],
                     product_id=bc["product_id"]),
-                side="buy", quantity=qty, entry_premium=ep, 
+                side="buy", quantity=qty, entry_premium=ep,
                 entry_time=datetime.now(pytz.UTC).isoformat(),
-                stop_premium=initial_stop,
-                target_premium=0,  # No fixed target — ride the wave
-                order_id=str(order["result"]["id"]), 
-                peak_premium=ep,
-                leverage=LEVERAGE)
-            
+                stop_premium=stop, target_premium=0,
+                order_id=str(order["result"]["id"]), peak_premium=ep, leverage=LEVERAGE)
+
             self.positions.append(pos)
+            self.last_trade_date = datetime.now(pytz.UTC).date()
+
             log.info(f"══════════════════════════════════════════════")
-            log.info(f"🏆 PREY CAPTURED! Leverage: {LEVERAGE}x")
+            log.info(f"🏆 TODAY'S KILL — PREY CAPTURED!")
             log.info(f"    └─ {qty}x {bc['symbol']}")
-            log.info(f"    └─ Entry Price:   ${ep:.4f}")
-            log.info(f"    └─ Trailing Stop: ${initial_stop:.4f} ({TRAILING_STOP_PCT*100:.0f}% from peak)")
-            log.info(f"    └─ Target:        ∞ (ride the wave, trailing protects)")
-            log.info(f"    └─ Leverage:      {LEVERAGE}x")
-            log.info(f"    └─ Order ID:      {order['result']['id']}")
+            log.info(f"    └─ Entry: ${ep:.4f} | Notional: ${ep*qty:,.2f}")
+            log.info(f"    └─ Stop: ${stop:.4f} ({TRAILING_STOP_PCT*100:.0f}% trail)")
+            log.info(f"    └─ Leverage: {LEVERAGE}x")
             log.info(f"══════════════════════════════════════════════")
+            log.info("🏆 Done for today. Monitoring until exit.")
             _save_json(POSITIONS_FILE, [asdict(p) for p in self.positions])
         else:
-            log.error(f"💥 ORDER REJECTED! Response: {order}")
+            log.error(f"💥 ORDER REJECTED: {order}")
 
     def _monitor(self, pos):
-        """Monitor position with dynamic trailing stop loss.
-        
-        The stop only moves UP, never down:
-        - If price reaches new peak → stop moves up to peak * (1 - trail_pct)
-        - If price drops to stop → EXIT
-        - Peak is tracked per position
-        """
-        # Get contract symbol (handle both OptionContract objects and dicts)
-        if isinstance(pos.contract, dict):
-            symbol = pos.contract.get("symbol", "")
-            product_id = pos.contract.get("product_id", 0)
-        else:
-            symbol = pos.contract.symbol
-            product_id = pos.contract.product_id
-        
-        curr = self.api.get_option_premium(symbol)
-        if not curr: 
-            log.warning(f"    🔇 Can't get price for {symbol} — prey went dark")
-            return
-        
+        sym = pos.contract.symbol if not isinstance(pos.contract, dict) else pos.contract.get("symbol","")
+        pid = pos.contract.product_id if not isinstance(pos.contract, dict) else pos.contract.get("product_id",0)
+
+        curr = self.api.get_option_premium(sym)
+        if not curr: return
+
         p = curr.get("mark_price", pos.entry_premium)
         if p <= 0: return
-        
-        # ── UPDATE PEAK ──
+
         if p > pos.peak_premium:
-            old_peak = pos.peak_premium
             pos.peak_premium = p
-            pos.stop_premium = p * (1 - TRAILING_STOP_PCT)
-            if old_peak != p:
-                log.info(f"    📈 NEW PEAK! {symbol}: ${p:.4f} → Stop raised to ${pos.stop_premium:.4f}")
-        
-        # ── CALCULATE P&L ──
-        pnl_pct = ((p - pos.entry_premium) / pos.entry_premium) * 100
-        leveraged_pnl = pnl_pct * LEVERAGE
-        
+            pos.stop_premium = p * (1-TRAILING_STOP_PCT)
+            log.info(f"    📈 NEW PEAK: ${p:.4f} → Stop: ${pos.stop_premium:.4f}")
+
+        pnl_pct = ((p-pos.entry_premium)/pos.entry_premium)*100
         emoji = "📈" if pnl_pct > 0 else "📉"
-        log.info(f"    {emoji} {symbol}: ${p:.4f} ({pnl_pct:+.1f}% | {leveraged_pnl:+.0f}% w/{LEVERAGE}x) | Peak: ${pos.peak_premium:.4f} | Stop: ${pos.stop_premium:.4f}")
-        
-        # ── CHECK EXIT CONDITIONS ──
-        # 1. Trailing stop hit
+        log.info(f"    {emoji} {sym}: ${p:.4f} ({pnl_pct:+.1f}% | {pnl_pct*LEVERAGE:+.0f}% lev) | Peak: ${pos.peak_premium:.4f} | Stop: ${pos.stop_premium:.4f}")
+
         if p <= pos.stop_premium:
-            final_pnl = pnl_pct
-            if final_pnl > 0:
-                log.info(f"    🎉 TRAILING STOP — Locking in {pnl_pct:+.1f}% profit!")
-                self._close(pos, p, f"TRAILING_STOP_PROFIT ({pnl_pct:+.1f}%)")
-            else:
-                log.warning(f"    🩸 TRAILING STOP — Cut loss at {pnl_pct:+.1f}%")
-                self._close(pos, p, f"TRAILING_STOP_LOSS ({pnl_pct:+.1f}%)")
-            return
-        
-        # 2. Max hold time exceeded
+            reason = f"TRAILING_STOP ({pnl_pct:+.1f}%)"
+            log.info(f"    {'🎉' if pnl_pct>0 else '🩸'} {reason}")
+            self._close(pos, p, reason); return
+
         try:
-            entry_dt = datetime.fromisoformat(pos.entry_time.replace("Z", "+00:00"))
-            hours_held = (datetime.now(pytz.UTC) - entry_dt).total_seconds() / 3600
-            if hours_held >= MAX_HOLD_HOURS:
-                log.warning(f"    ⏰ MAX HOLD TIME ({MAX_HOLD_HOURS}h) exceeded — force closing")
-                self._close(pos, p, f"MAX_HOLD_{MAX_HOLD_HOURS}H")
-                return
-        except:
-            pass
+            entry_dt = datetime.fromisoformat(pos.entry_time.replace("Z","+00:00"))
+            if (datetime.now(pytz.UTC)-entry_dt).total_seconds()/3600 >= MAX_HOLD_HOURS:
+                self._close(pos, p, f"MAX_HOLD_{MAX_HOLD_HOURS}H"); return
+        except: pass
 
     def _close(self, pos, p, reason):
-        """Close a position and log the results."""
-        if isinstance(pos.contract, dict):
-            product_id = pos.contract.get("product_id", 0)
-            symbol = pos.contract.get("symbol", "")
-        else:
-            product_id = pos.contract.product_id
-            symbol = pos.contract.symbol
-        
-        self.api.place_order(product_id, "sell", pos.quantity, symbol)
-        
-        pnl = (p - pos.entry_premium) * pos.quantity
-        pnl_pct = ((p - pos.entry_premium) / pos.entry_premium) * 100
-        pos.status = "closed"
-        pos.exit_premium = p
-        pos.exit_reason = reason
-        pos.pnl = pnl
-        
-        emoji = "💰" if pnl > 0 else "💸"
+        sym = pos.contract.symbol if not isinstance(pos.contract, dict) else pos.contract.get("symbol","")
+        pid = pos.contract.product_id if not isinstance(pos.contract, dict) else pos.contract.get("product_id",0)
+        self.api.place_order(pid, "sell", pos.quantity, sym)
+
+        pnl = (p-pos.entry_premium)*pos.quantity
+        pnl_pct = ((p-pos.entry_premium)/pos.entry_premium)*100
+        pos.status="closed"; pos.exit_premium=p; pos.exit_reason=reason; pos.pnl=pnl
+
+        e = "💰" if pnl>0 else "💸"
         log.info(f"══════════════════════════════════════════════")
-        log.info(f"{emoji} PREY RELEASED — {reason}")
-        log.info(f"    └─ Contract:  {symbol}")
-        log.info(f"    └─ Entry:     ${pos.entry_premium:.4f}")
-        log.info(f"    └─ Peak:      ${pos.peak_premium:.4f}")
-        log.info(f"    └─ Exit:      ${p:.4f}")
-        log.info(f"    └─ P&L:       ${pnl:.4f} ({pnl_pct:+.1f}%)")
-        log.info(f"    └─ Leveraged: {pnl_pct * LEVERAGE:+.1f}% (at {LEVERAGE}x)")
+        log.info(f"{e} HUNT COMPLETE — {reason}")
+        log.info(f"    └─ Entry: ${pos.entry_premium:.4f} → Exit: ${p:.4f}")
+        log.info(f"    └─ Peak: ${pos.peak_premium:.4f}")
+        log.info(f"    └─ P&L: ${pnl:.4f} ({pnl_pct:+.1f}% | {pnl_pct*LEVERAGE:+.1f}% leveraged)")
         log.info(f"══════════════════════════════════════════════")
-        
+
         _save_json(POSITIONS_FILE, [asdict(p) for p in self.positions])
-        
-        # Also save to trade history
         history = _load_json(TRADE_HISTORY_FILE, [])
-        history.append({
-            "symbol": symbol, "entry": pos.entry_premium, "exit": p,
-            "peak": pos.peak_premium, "pnl": pnl, "pnl_pct": pnl_pct,
-            "reason": reason, "leverage": LEVERAGE,
-            "entry_time": pos.entry_time, 
-            "exit_time": datetime.now(pytz.UTC).isoformat()
-        })
+        history.append({"symbol":sym,"entry":pos.entry_premium,"exit":p,"peak":pos.peak_premium,
+            "pnl":pnl,"pnl_pct":pnl_pct,"reason":reason,"leverage":LEVERAGE,
+            "entry_time":pos.entry_time,"exit_time":datetime.now(pytz.UTC).isoformat()})
         _save_json(TRADE_HISTORY_FILE, history)
 
-
-# ── BOOT ──
 if __name__ == "__main__":
     bot = OptionsTradingBot()
     bot.run()
