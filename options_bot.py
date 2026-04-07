@@ -75,10 +75,10 @@ CLOSE_BEFORE_EXPIRY_MINS = 30
 MAX_HOLD_HOURS    = 12
 
 # ── MULTI-TIMEFRAME SETTINGS ──
-# Primary timeframe for signal generation
-PRIMARY_TIMEFRAME = "10m"
+# Primary timeframe for signal generation (10m not supported by API, using 15m)
+PRIMARY_TIMEFRAME = "15m"
 # Confirmation timeframes — at least 3 of 4 must agree
-CONFIRM_TIMEFRAMES = ["5m", "10m", "15m", "1h"]
+CONFIRM_TIMEFRAMES = ["5m", "15m", "30m", "1h"]
 # Number of candles to fetch per timeframe
 CANDLE_LIMIT = 30
 
@@ -165,11 +165,21 @@ class DeltaAPI:
         except: pass
         return 0.0
 
-    def get_candles(self, symbol="BTCUSD", resolution="10m", limit=30) -> list:
+    def get_candles(self, symbol="BTCUSD", resolution="15m", limit=30) -> list:
         """Fetch OHLCV candle data for a given timeframe."""
         try:
+            end = int(time.time())
+            
+            # Convert resolution string to seconds
+            res_sec = 60
+            if resolution.endswith('m'): res_sec = int(resolution[:-1]) * 60
+            elif resolution.endswith('h'): res_sec = int(resolution[:-1]) * 3600
+            elif resolution.endswith('d'): res_sec = int(resolution[:-1]) * 86400
+            
+            start = end - (res_sec * limit)
+            
             r = self.session.get(f"{BASE_URL}/v2/history/candles", 
-                                 params={"resolution": resolution, "symbol": symbol, "limit": limit},
+                                 params={"resolution": resolution, "symbol": symbol, "start": start, "end": end},
                                  timeout=10).json()
             if r.get("success"): return r.get("result", [])
         except: pass
