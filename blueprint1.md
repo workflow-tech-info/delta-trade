@@ -23,8 +23,9 @@ The bot answers all three questions automatically, every 2 minutes, 24/7.
 Think of it like a 4-step checklist. ALL 4 must pass before we trade.
 
 ```
-LAYER 1: 🗻 Survey the Landscape  (Weekly + Daily charts)
+LAYER 1: 🗻 Survey the Landscape  (Monthly + Weekly + Daily charts)
     "Is the overall market bullish, bearish, or choppy?"
+    → 3 timeframes VOTE → majority (2 of 3) wins
     → Sets the DAILY BIAS (locked for 24 hours)
          │
          ▼
@@ -38,9 +39,9 @@ LAYER 3: 🎯 Spot the Prey        (5-minute chart — our main hunting ground)
     → Score must be ≥ 70 out of 100
          │
          ▼
-LAYER 4: 🏹 Attack               (Option selection + order execution)
-    "Pick the best option contract using Greeks, set leverage, execute!"
-    → Full wallet × 50x leverage → Trailing stop protects profits
+LAYER 4: 🏹 Set the Trap          (SELL an option + collect premium)
+    "Pick the best OTM option to SELL using Greeks/OI, set 200x leverage!"
+    → Sell option → collect premium → profit as it DECAYS
 ```
 
 If ANY layer fails → **No trade.** The wolf waits.
@@ -54,6 +55,10 @@ If ANY layer fails → **No trade.** The wolf waits.
 Every day at midnight UTC, the bot does a **deep reconnaissance** — like a wolf climbing to the highest peak to survey the entire territory before deciding where to hunt.
 
 It downloads **months of price data** and runs EVERYTHING on it:
+
+### 📅 Monthly Chart (12 candles = ~1 year of history)
+
+The wolf checks the **"horizon"** — the massive macro trend visible from the mountain peak.
 
 ### 📅 Weekly Chart (20 candles = ~5 months of history)
 
@@ -169,13 +174,15 @@ The bot automatically detects these from swing highs/lows over 4 months.
 
 ### The Final Verdict — Daily Bias
 
-After all this analysis, the wolf makes ONE decision for the entire day:
+All 3 timeframes VOTE. **Majority wins (2 of 3):**
 
 | Verdict | What It Means | Strategy |
 |---------|--------------|----------|
-| **🟢 BULLISH** | Weekly AND Daily agree: UP | Only buy CALL options (profit when BTC rises) |
-| **🔴 BEARISH** | Weekly AND Daily agree: DOWN | Only buy PUT options (profit when BTC falls) |
-| **🟡 CHOPPY** | Weekly and Daily DISAGREE | HEDGE MODE — buy both call AND put to profit from volatility |
+| **🟢 BULLISH** | 2+ timeframes say UP | SELL PUT options (collect premium, profit if BTC stays above strike) |
+| **🔴 BEARISH** | 2+ timeframes say DOWN | SELL CALL options (collect premium, profit if BTC stays below strike) |
+| **🟡 CHOPPY** | True conflict (bull vs bear split) | STRANGLE — sell BOTH call + put to collect premium from both sides |
+
+> **Why majority vote?** Before, one stubborn timeframe (e.g. weekly EMAs still bearish from a crash months ago) could override a clearly bullish monthly and daily. Now the majority voice wins.
 
 This verdict is **LOCKED for 24 hours**. No changing mid-day.
 
@@ -216,63 +223,78 @@ Everything adds up to a **score from 0 to 100**.
 
 ---
 
-## 🏹 LAYER 4: Attack! (Option Selection + Execution)
+## 🏹 LAYER 4: Set the Trap! (SELL Options + Collect Premium)
+
+> **KEY STRATEGY SHIFT:** We don't BUY options — we **SELL** them. When you sell an option, you collect premium upfront. If the option expires worthless (price stays away from your strike), you keep ALL the premium. Time decay (theta) works FOR you, not against you.
 
 ### Step 1: Fetch the Wallet
 ```
 Wallet balance: $200
 ```
 
-### Step 2: Full Wallet × 50x Leverage
+### Step 2: Full Wallet × 200x Leverage
 ```
-$200 × 50 = $10,000 notional exposure
-(You control $10,000 worth of options with just $200)
-```
-
-### Step 3: Pick the Best Option (Greeks Analysis)
-
-The bot fetches all available options and scores each one by its "Greeks" — think of these as the prey's vital stats:
-
-| Greek | Hunter Name | What It Tells Us | What We Want |
-|-------|------------|------------------|-------------|
-| **Delta (Δ)** | ⚡ Speed | How fast the option moves when BTC moves $1 | 0.30-0.50 (sweet spot) |
-| **Gamma (Γ)** | 🎯 Reflexes | How fast Delta itself changes (acceleration) | High = explosive gains |
-| **Theta (Θ)** | 🩸 Bleed | How much value the option loses PER DAY just from time passing | Low = less daily cost |
-| **Vega (V)** | 💪 Vol Sensitivity | How much the option gains when volatility spikes | High = profits from chaos |
-| **IV** | 🔥 Fear Level | How scared/excited the market is right now | Low = cheap entry |
-
-The bot logs the top 3 candidates with their strengths and weaknesses, then picks the BEST one.
-
-### Step 4: Place the Order
-Market order → instant fill.
-
-### Step 5: Trailing Stop Loss Activates
-
-```
-Entry: $1,000 (the option cost this much)
-Initial Stop: $500 (50% below entry)
-
-Price rises to $1,500 → Stop rises to $750 ✅
-Price rises to $2,000 → Stop rises to $1,000 ✅ (breakeven!)
-Price rises to $3,000 → Stop rises to $1,500 ✅ (locked +50% profit!)
-Price drops to $1,500 → STOP HIT → EXIT at $1,500 (+50% profit!)
+$200 wallet → 200x leverage for selling
+Margin per lot ≈ $0.36 (BTC $72,000 × 0.001 / 200)
+Qty ≈ 450+ lots!
+(SELLING options gives 200x leverage — 10× more than buying!)
 ```
 
-**The stop ONLY moves UP, never down.** This means:
-- If price goes up, we ride it with no ceiling
-- If price reverses, we still keep most of our gains
-- If price tanks immediately, max loss is 50%
+### Step 3: Pick the Best Option to SELL (Greeks + OI Analysis)
+
+The bot fetches all available options and scores each one. For SELLING, the priorities are INVERTED:
+
+| Greek | Hunter Name | What It Tells Us | What We Want for SELLING |
+|-------|------------|------------------|-------------------------|
+| **Delta (Δ)** | ⚡ Distance | How close is this to being "in the money" | 0.20-0.40 (OTM = safer to sell) |
+| **Theta (Θ)** | 💰 Income | How much premium DECAYS per day | HIGH = more $ we earn daily |
+| **IV** | 🔥 Fat Premium | Higher IV = fatter premium to collect | HIGH = more to sell |
+| **OI** | 🏪 Liquidity | How many contracts are trading | HIGH = easy to exit |
+| **OTM %** | 🛡️ Safety | How far the strike is from current price | 1-5% OTM = sweet spot |
+
+> **For a total beginner:** Think of selling options like selling insurance. You collect the premium and hope nothing bad happens (price stays away from strike). Most of the time, nothing happens and you keep the money. The 200x leverage means your $200 can sell $40,000 worth of insurance.
+
+### Step 4: Place the SELL Order
+Market SELL → instant fill → premium COLLECTED.
+
+### Step 5: 5 Exit Triggers Monitor the Position
+
+| # | Exit Trigger | What It Means | Action |
+|---|-------------|---------------|--------|
+| 1 | **Stop Loss** | Premium DOUBLED (moved against you) | BUY BACK immediately — cut losses |
+| 2 | **Take Profit** | Premium dropped to 20% of entry (80% captured) | BUY BACK — bank the win |
+| 3 | **Trailing Lock** | Premium hit a low then bounced 50% back up | BUY BACK — lock in partial profit |
+| 4 | **Delta Exit** | Delta > 0.85 (option going deep ITM) | BUY BACK — danger zone |
+| 5 | **Max Hold** | 8 hours elapsed | BUY BACK — day trading rules |
+
+```
+Example: SELL PUT at $27.00/BTC premium
+
+Scenario A (WIN): BTC stays above strike → premium decays
+  $27 → $20 → $12 → $5.40 → HIT 20% TARGET!
+  BUY BACK at $5.40 → keep $21.60 per BTC × 0.001 × 450 lots = $9.72 profit ✅
+
+Scenario B (LOSS): BTC crashes toward strike → premium rises
+  $27 → $35 → $48 → $54 → HIT 2× STOP!
+  BUY BACK at $54 → lose $27 per BTC × 0.001 × 450 lots = $12.15 loss 🩸
+
+Scenario C (LOCK): Premium dips then bounces
+  $27 → $15 → $10 → $8 (trough) → $12 (bounced 50% from low)
+  BUY BACK at $12 → keep $15 profit per BTC ✅
+```
 
 ---
 
-## 🟡 CHOPPY MODE — The Hedge
+## 🟡 CHOPPY MODE — The Short Strangle
 
-When the market is "choppy" (weekly says UP, daily says DOWN, or vice versa), the wolf doesn't sit idle. Instead, it plays BOTH sides:
+When the market is "choppy" (true conflict between timeframes), the wolf sells BOTH sides:
 
-1. Buy a **CALL option** (50% of wallet) — profits if BTC goes UP
-2. Buy a **PUT option** (50% of wallet) — profits if BTC goes DOWN
+1. **SELL a CALL** (50% of wallet) — collect premium, safe if BTC doesn't rocket up
+2. **SELL a PUT** (50% of wallet) — collect premium, safe if BTC doesn't crash down
 
-**Why?** In choppy markets, big moves STILL happen — we just don't know which direction. By buying both, we profit from the MOVE itself, regardless of direction. If BTC swings 5%, one option loses but the other EXPLODES.
+**Why a strangle?** In choppy markets, price tends to oscillate in a range. Both options decay via theta. As long as BTC stays between our two strikes, BOTH premiums decay and we collect from both sides.
+
+> **Risk:** If BTC makes a massive move (breaks out of the range), one leg will lose more than the other gains. Stop losses on each leg protect against this.
 
 ---
 
@@ -280,12 +302,14 @@ When the market is "choppy" (weekly says UP, daily says DOWN, or vice versa), th
 
 | Rule | Value | Why |
 |------|-------|-----|
-| Max trades per day | 1 (2 in hedge mode) | One blockbuster trade, not 20 mediocre ones |
+| Strategy | **SELL** options | Collect premium, profit from decay |
+| Max trades per day | 1 (2 in strangle mode) | One blockbuster trade, not 20 mediocre ones |
 | Max hold time | 8 hours | We're day traders, not investors |
 | Min score for entry | 70/100 | Only the BEST signals |
-| Trailing stop | 50% from peak | Ride winners, cut losers |
-| Leverage | 50x | Amplify gains (and risk) |
-| Position sizing | 100% of wallet | Full conviction |
+| Stop loss | Premium doubles (100% rise) | Cut losses before they compound |
+| Take profit | Premium drops 80% | Bank 80% of max profit |
+| Leverage | **200x** (selling gives max leverage) | $200 controls ~450 lots |
+| Position sizing | 100% of wallet (85% safety margin) | Full conviction |
 | Cycle interval | 2 minutes | Fast enough for 5m candle trading |
 | Bias refresh | Once per day (midnight UTC) | Macro picture doesn't change hourly |
 
