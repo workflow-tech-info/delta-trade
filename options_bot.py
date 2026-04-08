@@ -31,7 +31,7 @@ PAPER_TRADE    = True if FORCE_PAPER_TRADE else os.getenv("PAPER_TRADE", "true")
 
 # v5.0 — One Kill a Day settings
 OPTIONS_MIN_SCORE = 70            # High bar for blockbuster entries
-LEVERAGE          = int(os.getenv("LEVERAGE", "20"))  # Delta max for options = 20x
+LEVERAGE          = int(os.getenv("LEVERAGE", "200"))  # 200x for SELLING options
 OPTIONS_RISK_PCT  = 1.0           # 100% of wallet
 MAX_POSITIONS     = 1
 MAX_TRADES_PER_DAY = 1            # One kill a day
@@ -604,7 +604,11 @@ class SignalEngine:
         log.info("╚══════════════════════════════════════════════════════════════════╝")
         self.daily_report = []; bias_votes = []
 
-        tf_configs = [("1w", "WEEKLY", 20, "🗻 HIGH GROUND"), ("1d", "DAILY", 120, "🌲 FOREST FLOOR")]
+        tf_configs = [
+            ("1M", "MONTHLY", 12, "🌍 THE HORIZON"),   # ~1 year of monthly candles
+            ("1w", "WEEKLY", 20, "🗻 HIGH GROUND"),    # ~5 months of weekly candles
+            ("1d", "DAILY", 120, "🌲 FOREST FLOOR"),   # ~4 months of daily candles
+        ]
 
         for tf, label, count, terrain in tf_configs:
             candles = self.api.get_candles(symbol, tf, count)
@@ -699,13 +703,22 @@ class SignalEngine:
         log.info(f"    {'━'*62}")
         bull_count = bias_votes.count("BULLISH")
         bear_count = bias_votes.count("BEARISH")
+        neutral_count = bias_votes.count("NEUTRAL")
+        total = len(bias_votes)
 
-        if bull_count >= 1 and bear_count == 0:
+        log.info(f"    📊 Votes: {bull_count} BULLISH | {bear_count} BEARISH | {neutral_count} NEUTRAL (out of {total})")
+
+        # Majority vote: 2 of 3 (or 1 of 2 if a TF had no data)
+        if bull_count >= 2:
             self.daily_bias = "BULLISH"
-        elif bear_count >= 1 and bull_count == 0:
+        elif bear_count >= 2:
             self.daily_bias = "BEARISH"
+        elif bull_count == 1 and bear_count == 0:
+            self.daily_bias = "BULLISH"  # 1 bullish + rest neutral = lean bullish
+        elif bear_count == 1 and bull_count == 0:
+            self.daily_bias = "BEARISH"  # 1 bearish + rest neutral = lean bearish
         else:
-            self.daily_bias = "CHOPPY"
+            self.daily_bias = "CHOPPY"   # True conflict: bull vs bear
 
         if self.daily_bias == "BULLISH":
             log.info(f"    🟢🐂 THE TERRAIN FAVORS THE BULLS")
@@ -868,8 +881,8 @@ class OptionsTradingBot:
         log.info("🎯 BOT v5.0 — 'One Kill a Day' Engine STARTING")
         log.info(f"    ⚙️  Cycle: {CYCLE_INTERVAL}s | Score≥{OPTIONS_MIN_SCORE} | Leverage: {LEVERAGE}x | MaxTrades: {MAX_TRADES_PER_DAY}/day")
         log.info(f"    ⚙️  Base TF: {PRIMARY_TIMEFRAME} | Confirm: {', '.join(CONFIRM_TIMEFRAMES)} | Macro: {', '.join(MACRO_TIMEFRAMES)}")
-        log.info(f"    ⚙️  Trailing Stop: {TRAILING_STOP_PCT*100:.0f}% from peak | Max Hold: {MAX_HOLD_HOURS}h")
-        log.info(f"    ⚙️  Position Sizing: {OPTIONS_RISK_PCT*100:.0f}% of wallet × {LEVERAGE}x leverage")
+        log.info(f"    ⚙️  Strategy: SELL options (collect premium, 200x leverage)")
+        log.info(f"    ⚙️  Stop: premium rises 100% | Take Profit: premium drops 80% | Max Hold: {MAX_HOLD_HOURS}h")
 
         wallet = self.api.get_wallet_balance()
         self.wallet_balance = wallet.get("available", 0)
@@ -952,132 +965,193 @@ class OptionsTradingBot:
             log.info("😴 Criteria not met — standing down.")
             return
 
-        # Fetch options chain
-        log.info(f"🔭 Scanning options for {BASE_UNDERLYING}...")
+        # SELL STRATEGY: Bullish = SELL PUT, Bearish = SELL CALL
+        # We SELL options to collect premium. Premium decays in our favor.
+        log.info(f"🔭 Scanning options to SELL for {BASE_UNDERLYING}...")
         chain = self.api.get_options_chain(BASE_UNDERLYING)
         if not chain:
             log.warning("🏜️  No contracts found!"); return
 
-        opt_type = "call" if sig == "BUY" else "put"
+        # INVERTED: Bullish → sell PUT (profit if BTC stays above strike)
+        #           Bearish → sell CALL (profit if BTC stays below strike)
+        opt_type = "put" if sig == "BUY" else "call"
         matching = [c for c in chain if c["type"] == opt_type and c["tradeable"]]
-        log.info(f"🗺️  Found {len(matching)} tradeable {opt_type.upper()}s")
+        log.info(f"🗺️  Found {len(matching)} tradeable {opt_type.upper()}s to SELL")
 
         if not matching:
             log.warning(f"💀 No tradeable {opt_type.upper()} options!"); return
 
-        # Greeks-based selection
-        target = spot * 1.01 if sig == "BUY" else spot * 0.99
+        # Greeks-based selection for SELLING
+        # For selling: we want HIGH theta (time decay = our income)
+        #              LOW delta (OTM = less risk of assignment)
+        #              HIGH IV (more premium to collect)
         for c in matching:
-            d_abs = abs(c.get("delta", 0)); gs = 0
-            if 0.30 <= d_abs <= 0.50: gs += 20
-            elif 0.20 <= d_abs <= 0.60: gs += 10
-            if abs(c.get("gamma",0)) > 0.003: gs += 10
-            if c.get("theta",0) > -50: gs += 10
-            gs += max(0, 20 - (abs(c["strike"]-target)/spot)*100)
+            gs = 0; d_abs = abs(c.get("delta", 0))
+            # Sweet spot: delta 0.20-0.40 (slight OTM for selling)
+            if 0.20 <= d_abs <= 0.40: gs += 25
+            elif 0.15 <= d_abs <= 0.50: gs += 15
+            elif d_abs < 0.15: gs += 5   # Too far OTM = low premium
+            # High theta = we earn more per day
+            theta = abs(c.get("theta", 0))
+            if theta > 80: gs += 20
+            elif theta > 50: gs += 15
+            elif theta > 30: gs += 10
+            # High IV = fat premium to collect
+            iv = c.get("iv", 0)
+            if iv > 80: gs += 15
+            elif iv > 50: gs += 10
+            elif iv > 30: gs += 5
+            # OI — prefer liquid contracts
+            oi = c.get("oi", 0) or c.get("open_interest", 0)
+            if oi > 100: gs += 10
+            elif oi > 50: gs += 5
+            # Proximity to spot — OTM preferred for selling
+            otm_pct = abs(c["strike"] - spot) / spot * 100
+            if 1 <= otm_pct <= 5: gs += 15   # 1-5% OTM sweet spot
+            elif otm_pct < 1: gs -= 5        # Too close = risky
             c["greek_score"] = gs
 
         matching.sort(key=lambda x: x["greek_score"], reverse=True)
         best = matching[0]
 
         # Log top candidates
-        log.info(f"🏹 TOP PREY (by Greeks):")
+        action = "SELL PUT" if opt_type == "put" else "SELL CALL"
+        log.info(f"🏹 TOP TARGETS TO {action} (by Greeks):")
         for i, c in enumerate(matching[:3]):
             rank = "👑" if i==0 else f"  {i+1}."
-            log.info(f"    {rank} {c['symbol']} | GScore: {c['greek_score']:.0f}")
-            log.info(f"       Δ={c.get('delta',0):+.4f} Γ={c.get('gamma',0):.6f} Θ={c.get('theta',0):.2f} IV={c.get('iv',0):.1f}%")
+            oi = c.get('oi', 0) or c.get('open_interest', 0)
+            otm = abs(c['strike'] - spot) / spot * 100
+            log.info(f"    {rank} {c['symbol']} | GScore: {c['greek_score']:.0f} | OTM: {otm:.1f}%")
+            log.info(f"       Δ={c.get('delta',0):+.4f} Θ={c.get('theta',0):.2f} IV={c.get('iv',0):.1f}% OI={oi}")
 
-        log.info(f"🔥 THIS IS THE ONE — {best['symbol']}")
+        log.info(f"🔥 SELLING THIS ONE — {best['symbol']}")
         self._open(best, sig)
 
     def _execute_hedge(self, spot):
-        """CHOPPY MODE: Buy both a CALL and PUT to profit from volatility."""
+        """CHOPPY MODE: SELL both a CALL and PUT (short strangle) to collect premium."""
         chain = self.api.get_options_chain(BASE_UNDERLYING)
         if not chain:
             log.warning("🏜️  No contracts for hedge!"); return
 
-        target = spot * 1.005  # Near ATM
+        log.info("    🛡️ STRANGLE: Selling BOTH call + put to collect premium from both sides")
 
         for opt_type in ["call", "put"]:
             matching = [c for c in chain if c["type"] == opt_type and c["tradeable"]]
             if not matching:
-                log.warning(f"    ⚠️  No tradeable {opt_type.upper()}s for hedge"); continue
+                log.warning(f"    ⚠️  No tradeable {opt_type.upper()}s"); continue
 
-            # Score by Greeks + proximity
+            # Score for SELLING: prefer OTM, high theta, high IV
             for c in matching:
                 gs = 0; d_abs = abs(c.get("delta", 0))
-                if 0.30 <= d_abs <= 0.50: gs += 20
-                elif 0.20 <= d_abs <= 0.60: gs += 10
-                if abs(c.get("gamma",0)) > 0.003: gs += 10
-                if c.get("theta",0) > -50: gs += 10
-                gs += max(0, 20 - (abs(c["strike"]-target)/spot)*100)
+                if 0.15 <= d_abs <= 0.35: gs += 25  # OTM sweet spot for selling
+                elif 0.10 <= d_abs <= 0.45: gs += 15
+                theta = abs(c.get("theta", 0))
+                if theta > 50: gs += 15
+                elif theta > 30: gs += 10
+                iv = c.get("iv", 0)
+                if iv > 50: gs += 10
+                otm_pct = abs(c["strike"] - spot) / spot * 100
+                if 2 <= otm_pct <= 6: gs += 15  # 2-6% OTM for strangle
                 c["greek_score"] = gs
 
             matching.sort(key=lambda x: x["greek_score"], reverse=True)
             best = matching[0]
 
-            emoji = "📗" if opt_type == "call" else "📕"
-            log.info(f"    {emoji} HEDGE LEG: {opt_type.upper()} — {best['symbol']}")
-            log.info(f"       Δ={best.get('delta',0):+.4f} Θ={best.get('theta',0):.2f} | Strike: ${best['strike']:,.0f}")
+            emoji = "📕" if opt_type == "call" else "📗"
+            otm = abs(best['strike'] - spot) / spot * 100
+            log.info(f"    {emoji} SELL {opt_type.upper()} — {best['symbol']} | OTM: {otm:.1f}%")
+            log.info(f"       Δ={best.get('delta',0):+.4f} Θ={best.get('theta',0):.2f} IV={best.get('iv',0):.1f}%")
 
             # Half wallet per leg
-            self._open(best, "BUY", wallet_fraction=0.5)
+            self._open(best, "BUY" if opt_type=="put" else "SELL", wallet_fraction=0.5)
 
-        log.info("    🛡️ Hedge pair placed — profiting from volatility either direction!")
+        log.info("    🛡️ Strangle placed — collecting premium from both sides!")
 
     def _open(self, bc, sig, wallet_fraction=1.0):
-        # Refresh wallet for full sizing
+        """SELL an option to collect premium. Leverage (200x) applies for selling."""
         wallet = self.api.get_wallet_balance()
         available = wallet.get("available", self.wallet_balance) if wallet.get("available", 0) > 0 else self.wallet_balance
 
         lev_result = self.api.set_leverage(bc["product_id"], LEVERAGE)
-        actual_leverage = lev_result.get("actual_leverage", LEVERAGE)
+        actual_lev = lev_result.get("actual_leverage", LEVERAGE)
 
-        # Delta Exchange: each option lot = 0.001 BTC
-        # Premium is quoted per 1 BTC, so cost_per_lot = premium × 0.001
+        # SELLING: Leverage DOES apply — margin = (spot × lot_size) / leverage
         LOT_SIZE = 0.001  # 0.001 BTC per contract on Delta Exchange
-        notional = available * wallet_fraction * actual_leverage
-        ep = bc["ask"] if bc["ask"] > 0 else bc["mark_price"]
-        cost_per_lot = ep * LOT_SIZE  # Actual USD cost per lot
-        qty = max(1, int(notional / max(cost_per_lot, 0.01)))
+        spot = self.api.get_spot_price()
+        allocation = available * wallet_fraction
+        margin_per_lot = (spot * LOT_SIZE) / actual_lev
+        qty = max(1, int(allocation * 0.85 / max(margin_per_lot, 0.01)))  # 85% safety
+
+        ep = bc["bid"] if bc["bid"] > 0 else bc["mark_price"]  # SELL at bid
 
         frac_label = f" ({wallet_fraction*100:.0f}% of wallet)" if wallet_fraction < 1.0 else ""
-        log.info(f"    💰 Wallet: ${available:,.2f} | Allocation: ${available*wallet_fraction:,.2f}{frac_label}")
-        log.info(f"    💰 Notional ({actual_leverage}x leverage): ${notional:,.2f}")
-        log.info(f"    💰 Premium: ${ep:.2f}/BTC | Cost/lot: ${cost_per_lot:.4f} | Qty: {qty} lots")
-        log.info(f"    💰 Buying {qty}x @ ${ep:.4f}")
-        log.info(f"    📤 {'PAPER' if PAPER_TRADE else 'LIVE'} order...")
+        log.info(f"    💰 Wallet: ${available:,.2f} | Allocation: ${allocation:,.2f}{frac_label}")
+        log.info(f"    💰 SELLING options — {actual_lev}x leverage applies!")
+        log.info(f"    💰 Margin/lot: ${margin_per_lot:.4f} | Premium: ${ep:.2f}/BTC")
+        log.info(f"    💰 Qty: {qty} lots | Premium collected: ${ep * LOT_SIZE * qty:,.2f}")
+        log.info(f"    💰 SELL {qty}x @ ${ep:.4f}")
+        log.info(f"    📤 {'PAPER' if PAPER_TRADE else 'LIVE'} SELL order...")
 
-        order = self.api.place_order(bc["product_id"], "buy", qty, bc["symbol"])
+        order = self.api.place_order(bc["product_id"], "sell", qty, bc["symbol"])
 
         if order.get("success"):
-            stop = ep * (1-TRAILING_STOP_PCT)
+            # For SELLING: stop when premium DOUBLES (loss), target when drops 80% (profit)
+            stop = ep * 2.0     # Stop loss: premium doubles against us
+            target = ep * 0.20  # Take profit: premium drops to 20% (80% captured)
+
             pos = OptionsPosition(
                 contract=OptionContract(symbol=bc["symbol"], underlying=BASE_UNDERLYING, expiry="",
                     strike=bc["strike"], option_type=bc["type"], premium=ep,
                     delta=bc.get("delta",0), implied_vol=bc.get("iv",0)/100 if bc.get("iv",0)>1 else 0.5,
                     open_interest=0, bid=bc["bid"], ask=bc["ask"], spread_pct=bc["spread_pct"],
                     product_id=bc["product_id"]),
-                side="buy", quantity=qty, entry_premium=ep,
+                side="sell", quantity=qty, entry_premium=ep,
                 entry_time=datetime.now(pytz.UTC).isoformat(),
-                stop_premium=stop, target_premium=0,
-                order_id=str(order["result"]["id"]), peak_premium=ep, leverage=LEVERAGE)
+                stop_premium=stop, target_premium=target,
+                order_id=str(order["result"]["id"]), peak_premium=ep, leverage=actual_lev)
 
             self.positions.append(pos)
             self.last_trade_date = datetime.now(pytz.UTC).date()
 
             log.info(f"══════════════════════════════════════════════")
-            log.info(f"🏆 TODAY'S KILL — PREY CAPTURED!")
-            log.info(f"    └─ {qty}x {bc['symbol']}")
-            log.info(f"    └─ Entry: ${ep:.4f} | Notional: ${ep*qty:,.2f}")
-            log.info(f"    └─ Stop: ${stop:.4f} ({TRAILING_STOP_PCT*100:.0f}% trail)")
-            log.info(f"    └─ Leverage: {LEVERAGE}x")
+            log.info(f"🏆 PREMIUM COLLECTED — TRAP IS SET!")
+            log.info(f"    └─ SOLD {qty}x {bc['symbol']}")
+            log.info(f"    └─ Premium: ${ep:.2f}/BTC | Collected: ${ep * LOT_SIZE * qty:,.2f}")
+            log.info(f"    └─ Stop Loss: ${stop:.2f} (premium doubles = CUT)")
+            log.info(f"    └─ Take Profit: ${target:.2f} (80% decay = BANK IT)")
+            log.info(f"    └─ Leverage: {actual_lev}x")
             log.info(f"══════════════════════════════════════════════")
-            log.info("🏆 Done for today. Monitoring until exit.")
+            log.info("🏆 Premium trap set. Monitoring until decay or stop.")
             _save_json(POSITIONS_FILE, [asdict(p) for p in self.positions])
         else:
             log.error(f"💥 ORDER REJECTED: {order}")
+            # Retry with fewer lots if margin insufficient
+            err_code = order.get('error', {}).get('code', '')
+            if err_code == 'insufficient_margin' and qty > 10:
+                retry_qty = int(qty * 0.6)
+                log.info(f"    🔄 Retrying with {retry_qty} lots (60%)...")
+                order2 = self.api.place_order(bc["product_id"], "sell", retry_qty, bc["symbol"])
+                if order2.get("success"):
+                    stop = ep * 2.0; target = ep * 0.20
+                    pos = OptionsPosition(
+                        contract=OptionContract(symbol=bc["symbol"], underlying=BASE_UNDERLYING, expiry="",
+                            strike=bc["strike"], option_type=bc["type"], premium=ep,
+                            delta=bc.get("delta",0), implied_vol=bc.get("iv",0)/100 if bc.get("iv",0)>1 else 0.5,
+                            open_interest=0, bid=bc["bid"], ask=bc["ask"], spread_pct=bc["spread_pct"],
+                            product_id=bc["product_id"]),
+                        side="sell", quantity=retry_qty, entry_premium=ep,
+                        entry_time=datetime.now(pytz.UTC).isoformat(),
+                        stop_premium=stop, target_premium=target,
+                        order_id=str(order2["result"]["id"]), peak_premium=ep, leverage=actual_lev)
+                    self.positions.append(pos)
+                    self.last_trade_date = datetime.now(pytz.UTC).date()
+                    log.info(f"    ✅ Retry succeeded: SOLD {retry_qty}x {bc['symbol']}")
+                    _save_json(POSITIONS_FILE, [asdict(p) for p in self.positions])
+                else:
+                    log.error(f"    💥 Retry also rejected: {order2}")
 
     def _monitor(self, pos):
+        """Monitor a SOLD option. We PROFIT when premium DROPS (decay)."""
         sym = pos.contract.symbol if not isinstance(pos.contract, dict) else pos.contract.get("symbol","")
         pid = pos.contract.product_id if not isinstance(pos.contract, dict) else pos.contract.get("product_id",0)
 
@@ -1087,47 +1161,86 @@ class OptionsTradingBot:
         p = curr.get("mark_price", pos.entry_premium)
         if p <= 0: return
 
-        if p > pos.peak_premium:
-            pos.peak_premium = p
-            pos.stop_premium = p * (1-TRAILING_STOP_PCT)
-            log.info(f"    📈 NEW PEAK: ${p:.4f} → Stop: ${pos.stop_premium:.4f}")
+        # For SELLING: profit = entry - current (we want premium to DROP)
+        # Track LOWEST premium (that's our best profit point)
+        LOT_SIZE = 0.001
+        if not hasattr(pos, 'trough_premium') or pos.trough_premium is None:
+            pos.trough_premium = p
+        if p < pos.trough_premium:
+            pos.trough_premium = p
+            log.info(f"    📉 NEW LOW (good!): ${p:.2f} — premium decaying in our favor!")
 
-        pnl_pct = ((p-pos.entry_premium)/pos.entry_premium)*100
-        emoji = "📈" if pnl_pct > 0 else "📉"
-        log.info(f"    {emoji} {sym}: ${p:.4f} ({pnl_pct:+.1f}% | {pnl_pct*LEVERAGE:+.0f}% lev) | Peak: ${pos.peak_premium:.4f} | Stop: ${pos.stop_premium:.4f}")
+        # P&L for selling: we SOLD at entry, current price is what we'd buy back at
+        pnl_per_lot = (pos.entry_premium - p) * LOT_SIZE
+        pnl_total = pnl_per_lot * pos.quantity
+        decay_pct = ((pos.entry_premium - p) / pos.entry_premium) * 100  # Positive = profit
 
-        if p <= pos.stop_premium:
-            reason = f"TRAILING_STOP ({pnl_pct:+.1f}%)"
-            log.info(f"    {'🎉' if pnl_pct>0 else '🩸'} {reason}")
+        emoji = "📉✅" if decay_pct > 0 else "📈❌"
+        log.info(f"    {emoji} {sym}: Sold@${pos.entry_premium:.2f} → Now@${p:.2f}")
+        log.info(f"        Decay: {decay_pct:+.1f}% | P&L: ${pnl_total:,.2f} | Low: ${pos.trough_premium:.2f}")
+
+        # EXIT 1: STOP LOSS — premium RISES above 2× entry (moved against us)
+        if p >= pos.stop_premium:
+            reason = f"STOP_LOSS (premium rose to ${p:.2f}, 2× entry)"
+            log.info(f"    🩸 {reason}")
             self._close(pos, p, reason); return
 
+        # EXIT 2: TAKE PROFIT — premium dropped to 20% of entry (80% captured)
+        if p <= pos.target_premium:
+            reason = f"TAKE_PROFIT (premium decayed {decay_pct:.0f}%, target hit)"
+            log.info(f"    🎉 {reason}")
+            self._close(pos, p, reason); return
+
+        # EXIT 3: TRAILING PROFIT LOCK — if premium bounced 50% from the low
+        if pos.trough_premium > 0 and pos.trough_premium < pos.entry_premium * 0.8:
+            bounce_from_low = (p - pos.trough_premium) / max(pos.trough_premium, 0.01)
+            if bounce_from_low > 0.50:  # Premium bounced 50% from trough
+                reason = f"TRAILING_LOCK (bounced {bounce_from_low*100:.0f}% from low ${pos.trough_premium:.2f})"
+                log.info(f"    ⚡ {reason}")
+                self._close(pos, p, reason); return
+
+        # EXIT 4: DELTA WARNING — if delta gets too high (deep ITM danger)
+        if curr.get("delta"):
+            d = abs(curr["delta"])
+            if d > 0.75:
+                log.info(f"    ⚠️  DELTA WARNING: {d:.2f} — option going deep ITM!")
+            if d > 0.85:
+                reason = f"DELTA_EXIT (Δ={d:.2f}, too deep ITM)"
+                log.info(f"    🩸 {reason}")
+                self._close(pos, p, reason); return
+
+        # EXIT 5: MAX HOLD TIME
         try:
             entry_dt = datetime.fromisoformat(pos.entry_time.replace("Z","+00:00"))
-            if (datetime.now(pytz.UTC)-entry_dt).total_seconds()/3600 >= MAX_HOLD_HOURS:
-                self._close(pos, p, f"MAX_HOLD_{MAX_HOLD_HOURS}H"); return
+            hold_hrs = (datetime.now(pytz.UTC)-entry_dt).total_seconds()/3600
+            if hold_hrs >= MAX_HOLD_HOURS:
+                self._close(pos, p, f"MAX_HOLD_{MAX_HOLD_HOURS}H (decay: {decay_pct:+.0f}%)"); return
         except: pass
 
     def _close(self, pos, p, reason):
+        """Close a SOLD option by BUYING it back."""
         sym = pos.contract.symbol if not isinstance(pos.contract, dict) else pos.contract.get("symbol","")
         pid = pos.contract.product_id if not isinstance(pos.contract, dict) else pos.contract.get("product_id",0)
-        self.api.place_order(pid, "sell", pos.quantity, sym)
+        # BUY back to close the short
+        self.api.place_order(pid, "buy", pos.quantity, sym)
 
-        pnl = (p-pos.entry_premium)*pos.quantity
-        pnl_pct = ((p-pos.entry_premium)/pos.entry_premium)*100
+        LOT_SIZE = 0.001
+        pnl_per_lot = (pos.entry_premium - p) * LOT_SIZE  # Positive if premium dropped
+        pnl = pnl_per_lot * pos.quantity
+        pnl_pct = ((pos.entry_premium - p) / pos.entry_premium) * 100
         pos.status="closed"; pos.exit_premium=p; pos.exit_reason=reason; pos.pnl=pnl
 
         e = "💰" if pnl>0 else "💸"
         log.info(f"══════════════════════════════════════════════")
         log.info(f"{e} HUNT COMPLETE — {reason}")
-        log.info(f"    └─ Entry: ${pos.entry_premium:.4f} → Exit: ${p:.4f}")
-        log.info(f"    └─ Peak: ${pos.peak_premium:.4f}")
-        log.info(f"    └─ P&L: ${pnl:.4f} ({pnl_pct:+.1f}% | {pnl_pct*LEVERAGE:+.1f}% leveraged)")
+        log.info(f"    └─ SOLD @ ${pos.entry_premium:.2f} → Bought back @ ${p:.2f}")
+        log.info(f"    └─ P&L: ${pnl:,.4f} ({pnl_pct:+.1f}%) | Qty: {pos.quantity} lots")
         log.info(f"══════════════════════════════════════════════")
 
         _save_json(POSITIONS_FILE, [asdict(p) for p in self.positions])
         history = _load_json(TRADE_HISTORY_FILE, [])
-        history.append({"symbol":sym,"entry":pos.entry_premium,"exit":p,"peak":pos.peak_premium,
-            "pnl":pnl,"pnl_pct":pnl_pct,"reason":reason,"leverage":LEVERAGE,
+        history.append({"symbol":sym,"side":"sell","entry":pos.entry_premium,"exit":p,
+            "pnl":pnl,"pnl_pct":pnl_pct,"reason":reason,"leverage":pos.leverage,
             "entry_time":pos.entry_time,"exit_time":datetime.now(pytz.UTC).isoformat()})
         _save_json(TRADE_HISTORY_FILE, history)
 
