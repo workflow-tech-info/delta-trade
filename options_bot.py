@@ -829,8 +829,10 @@ class SignalEngine:
             return "HEDGE", 50, "choppy_hedge", self.daily_bias, spot
 
         # LAYER 2: Higher TF confirmation (15m, 1h, 4h)
+        # For SELLING: we need the macro bias to hold, but short-term dips
+        # are actually GOOD entries (oversold = inflated premiums to sell into)
         log.info("    📊 HIGHER TF CONFIRMATION:")
-        confirm_count = 0
+        confirm_score = 0  # Use fractional scoring
         for tf in CONFIRM_TIMEFRAMES:
             candles = self.api.get_candles(symbol, tf, CANDLE_LIMIT)
             if not candles:
@@ -852,11 +854,14 @@ class SignalEngine:
             emoji = "🟢" if direction=="BULLISH" else "🔴" if direction=="BEARISH" else "⚪"
             log.info(f"        {tf:>4s}: {emoji} {direction:8s} | RSI: {rsi:.0f} | Score: {score}")
 
+            # Full match = 1.0, Neutral = 0.5 (doesn't oppose), Opposite = 0
             if (self.daily_bias=="BULLISH" and direction=="BULLISH") or (self.daily_bias=="BEARISH" and direction=="BEARISH"):
-                confirm_count += 1
+                confirm_score += 1.0
+            elif direction == "NEUTRAL":
+                confirm_score += 0.5  # Neutral doesn't oppose our bias
 
-        log.info(f"    📐 Confirmation: {confirm_count}/{len(CONFIRM_TIMEFRAMES)} align with {self.daily_bias} bias")
-        if confirm_count < 2:
+        log.info(f"    📐 Confirmation: {confirm_score:.1f}/3.0 align with {self.daily_bias} bias (need 1.5+)")
+        if confirm_score < 1.5:
             log.info("    ⚠️  Higher TFs don't confirm daily bias — standing down.")
             return "NEUTRAL", 0, "no_confirmation", self.daily_bias, spot
 
