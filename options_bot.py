@@ -111,7 +111,7 @@ class DeltaAPI:
     def get_candles(self, symbol="BTCUSD", resolution="5m", limit=50) -> list:
         try:
             end = int(time.time())
-            res_map = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
+            res_map = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800, 'M': 2592000}  # M = ~30 days
             unit = resolution[-1]; val = int(resolution[:-1])
             start = end - (val * res_map.get(unit, 60) * limit)
             r = self.session.get(f"{BASE_URL}/v2/history/candles",
