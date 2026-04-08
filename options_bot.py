@@ -590,9 +590,12 @@ class SignalEngine:
     def update_daily_bias(self, symbol="BTCUSD"):
         """LAYER 1: The wolf surveys the entire landscape before the hunt.
         Reads 4 months of history, runs all indicators, all 27+ patterns,
-        Fibonacci retracements, support/resistance. Locked for the day."""
-        today = datetime.now(pytz.UTC).date()
-        if self.bias_date == today and self.daily_bias != "UNKNOWN":
+        Fibonacci retracements, support/resistance. Refreshes every 4 hours."""
+        now = datetime.now(pytz.UTC)
+        # Refresh every 4 hours instead of daily
+        if (self.bias_date == now.date() and self.daily_bias != "UNKNOWN"
+                and hasattr(self, '_last_bias_hour')
+                and (now.hour - self._last_bias_hour) < 4):
             return
 
         spot = self.api.get_spot_price(symbol)
@@ -602,18 +605,28 @@ class SignalEngine:
         log.info("║  🐺 THE WOLF SURVEYS THE LANDSCAPE — Deep Macro Reconnaissance  ║")
         log.info("║  Scanning months of terrain before choosing the hunting ground   ║")
         log.info("╚══════════════════════════════════════════════════════════════════╝")
-        self.daily_report = []; bias_votes = []
+        self.daily_report = []; bias_votes = []; bias_scores = []
+
+        # Build monthly candles from daily data (Delta API doesn't support 1M)
+        daily_candles = self.api.get_candles(symbol, "1d", 365)  # 1 year of daily
+        monthly_candles = self._build_monthly_candles(daily_candles) if daily_candles else []
 
         tf_configs = [
-            ("1M", "MONTHLY", 12, "🌍 THE HORIZON"),   # ~1 year of monthly candles
-            ("1w", "WEEKLY", 20, "🗻 HIGH GROUND"),    # ~5 months of weekly candles
-            ("1d", "DAILY", 120, "🌲 FOREST FLOOR"),   # ~4 months of daily candles
+            (monthly_candles, "MONTHLY", "🌍 THE HORIZON"),
+            (None, "WEEKLY", "🗻 HIGH GROUND"),     # fetched live
+            (None, "DAILY", "🌲 FOREST FLOOR"),     # fetched live
         ]
 
-        for tf, label, count, terrain in tf_configs:
-            candles = self.api.get_candles(symbol, tf, count)
-            if not candles:
-                log.info(f"    📅 {label}: ⚪ Fog covers {terrain} — no visibility")
+        for data_or_none, label, terrain in tf_configs:
+            if data_or_none is not None:
+                candles = data_or_none
+            else:
+                tf_res = "1w" if label == "WEEKLY" else "1d"
+                tf_count = 52 if label == "WEEKLY" else 120
+                candles = self.api.get_candles(symbol, tf_res, tf_count)
+
+            if not candles or len(candles) < 5:
+                log.info(f"    📅 {label}: ⚪ Fog covers {terrain} — no visibility ({len(candles) if candles else 0} candles)")
                 continue
 
             log.info(f"")
@@ -693,6 +706,7 @@ class SignalEngine:
                 log.info(f"    ⚡🔴 The prey presses against RESISTANCE — potential rejection!")
 
             bias_votes.append(result['direction'])
+            bias_scores.append(result['score'])
             self.daily_report.append({"tf": label, **result})
             self.key_levels[label] = {"supports": result['supports'], "resistances": result['resistances']}
 
@@ -707,8 +721,11 @@ class SignalEngine:
         total = len(bias_votes)
 
         log.info(f"    📊 Votes: {bull_count} BULLISH | {bear_count} BEARISH | {neutral_count} NEUTRAL (out of {total})")
+        if bias_scores:
+            avg_score = sum(bias_scores) / len(bias_scores)
+            log.info(f"    📊 Average score: {avg_score:.1f}/100")
 
-        # Majority vote: 2 of 3 (or 1 of 2 if a TF had no data)
+        # Majority vote: 2 of 3
         if bull_count >= 2:
             self.daily_bias = "BULLISH"
         elif bear_count >= 2:
@@ -717,21 +734,32 @@ class SignalEngine:
             self.daily_bias = "BULLISH"  # 1 bullish + rest neutral = lean bullish
         elif bear_count == 1 and bull_count == 0:
             self.daily_bias = "BEARISH"  # 1 bearish + rest neutral = lean bearish
+        elif neutral_count >= 2 and bias_scores:
+            # All neutral — use average score to tiebreak
+            avg = sum(bias_scores) / len(bias_scores)
+            if avg >= 52:
+                self.daily_bias = "BULLISH"
+                log.info(f"    🟢 Neutrals lean BULLISH (avg score: {avg:.1f})")
+            elif avg <= 48:
+                self.daily_bias = "BEARISH"
+                log.info(f"    🔴 Neutrals lean BEARISH (avg score: {avg:.1f})")
+            else:
+                self.daily_bias = "CHOPPY"
         else:
             self.daily_bias = "CHOPPY"   # True conflict: bull vs bear
 
         if self.daily_bias == "BULLISH":
             log.info(f"    🟢🐂 THE TERRAIN FAVORS THE BULLS")
-            log.info(f"    📋 Strategy: Hunt CALL options only. The herd moves uphill.")
+            log.info(f"    📋 Strategy: SELL PUT options to collect premium.")
             log.info(f"    🎯 Look for: Pullbacks to support / Fib 0.382-0.618 for entries")
         elif self.daily_bias == "BEARISH":
             log.info(f"    🔴🐻 THE BEARS RULE THIS TERRITORY")
-            log.info(f"    📋 Strategy: Hunt PUT options only. The herd stampedes down.")
+            log.info(f"    📋 Strategy: SELL CALL options to collect premium.")
             log.info(f"    🎯 Look for: Rallies to resistance / Fib 0.382-0.618 for entries")
         else:
             log.info(f"    🟡⚔️ THE BATTLEFIELD IS CONTESTED — CHOPPY TERRITORY")
-            log.info(f"    📋 Strategy: HEDGE MODE — Buy BOTH call + put.")
-            log.info(f"    🎯 Profit from volatility spikes in either direction")
+            log.info(f"    📋 Strategy: STRANGLE — sell BOTH call + put.")
+            log.info(f"    🎯 Profit from theta decay while price ranges")
 
         # Macro pattern alerts
         for r in self.daily_report:
@@ -740,27 +768,64 @@ class SignalEngine:
                     log.info(f"    💥 MACRO SIGNAL: {pn} on {r['tf']} — act accordingly!")
 
         log.info(f"")
-        log.info(f"    ⏰ This terrain map is LOCKED until midnight UTC.")
+        log.info(f"    ⏰ Bias refreshes every 4 hours (next: {(now.hour // 4 + 1) * 4 % 24}:00 UTC).")
         log.info(f"    🐺 The wolf has surveyed. Now we wait for the perfect moment.")
         log.info("╔══════════════════════════════════════════════════════════════════╗")
-        log.info(f"║  BIAS: {self.daily_bias:8s} | BTC: ${spot:>10,.2f} | Refresh: midnight UTC  ║")
+        log.info(f"║  BIAS: {self.daily_bias:8s} | BTC: ${spot:>10,.2f} | Refresh: 4h       ║")
         log.info("╚══════════════════════════════════════════════════════════════════╝")
 
-        self.bias_date = today
-        self.bias_last_updated = datetime.now(pytz.UTC)
+        self.bias_date = now.date()
+        self._last_bias_hour = now.hour
+        self.bias_last_updated = now
+
+    def _build_monthly_candles(self, daily_candles):
+        """Build monthly OHLCV candles from daily candles.
+        Delta API doesn't support 1M resolution, so we aggregate manually."""
+        if not daily_candles or len(daily_candles) < 30:
+            return []
+
+        from collections import defaultdict
+        months = defaultdict(list)
+        for c in daily_candles:
+            # Group by year-month
+            try:
+                ts = c.get("time", c.get("t", 0))
+                if isinstance(ts, (int, float)):
+                    dt = datetime.fromtimestamp(ts, tz=pytz.UTC)
+                else:
+                    dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                key = f"{dt.year}-{dt.month:02d}"
+                months[key].append(c)
+            except:
+                continue
+
+        monthly = []
+        for key in sorted(months.keys()):
+            candles = months[key]
+            if len(candles) < 5:  # Skip incomplete months
+                continue
+            monthly.append({
+                "open": float(candles[0].get("open", 0)),
+                "high": max(float(c.get("high", 0)) for c in candles),
+                "low": min(float(c.get("low", float('inf'))) for c in candles),
+                "close": float(candles[-1].get("close", 0)),
+                "volume": sum(float(c.get("volume", 0)) for c in candles),
+                "time": candles[0].get("time", candles[0].get("t", 0))
+            })
+
+        log.info(f"    🌍 Built {len(monthly)} monthly candles from {len(daily_candles)} daily")
+        return monthly
 
     def evaluate(self, symbol="BTCUSD"):
         """Full 4-layer evaluation. Returns (signal, score, method, bias, spot)."""
         spot = self.api.get_spot_price(symbol)
 
-        # Refresh bias at midnight UTC (new day)
-        today = datetime.now(pytz.UTC).date()
-        if self.bias_date != today:
-            self.update_daily_bias(symbol)
+        # Refresh bias (4-hour check happens inside update_daily_bias)
+        self.update_daily_bias(symbol)
 
-        # LAYER 1 CHECK: Choppy = HEDGE mode (handled in _cycle)
+        # LAYER 1 CHECK: Choppy = STRANGLE mode (handled in _cycle)
         if self.daily_bias == "CHOPPY":
-            log.info("    🟡 Market is CHOPPY — HEDGE MODE active.")
+            log.info("    🟡 Market is CHOPPY — STRANGLE MODE active.")
             return "HEDGE", 50, "choppy_hedge", self.daily_bias, spot
 
         # LAYER 2: Higher TF confirmation (15m, 1h, 4h)
